@@ -44,7 +44,7 @@ modded class Barrel_ColorBase
     // -----------------------------------------------------------
 
     // -----------------------------------------------------------
-    // C1 audit: Drop virtual items when vanilla whitelisted barrel
+    // Drop virtual items when vanilla whitelisted barrel
     // is destroyed. LFV_Barrel_Base has its own EEKilled; this
     // covers vanilla barrels (Barrel_Blue, Barrel_Green, etc.)
     // that are in the whitelist but don't inherit LFV_Barrel_Base.
@@ -68,15 +68,15 @@ modded class Barrel_ColorBase
     }
 
     // -----------------------------------------------------------
-    // C3 fix: Untrack when entity is deleted from world
-    // (admin wipe, CE cleanup, player picks up empty barrel, etc.)
+    // Untrack when entity is deleted from world.
+    // Phase 1: route through OnEntityDestroyed (central purge).
     // -----------------------------------------------------------
     override void EEDelete(EntityAI parent)
     {
         #ifdef SERVER
         LFV_Module module = LFV_Module.GetModule();
         if (module)
-            module.UntrackContainer(this);
+            module.OnEntityDestroyed(this);
         #endif
 
         super.EEDelete(parent);

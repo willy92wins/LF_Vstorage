@@ -247,13 +247,13 @@ class LFV_StateMachine
         int cleared = 0;
 
         // Attachments (iterate backward for safe removal)
-        for (int i = inv.AttachmentCount() - 1; i >= 0; i = i - 1)
+        for (int i = inv.AttachmentCount() - 1; i >= 0; i--)
         {
             EntityAI att = inv.GetAttachmentFromIndex(i);
             if (att)
             {
                 GetGame().ObjectDelete(att);
-                cleared = cleared + 1;
+                cleared++;
             }
         }
 
@@ -261,13 +261,13 @@ class LFV_StateMachine
         CargoBase cargo = inv.GetCargo();
         if (cargo)
         {
-            for (int j = cargo.GetItemCount() - 1; j >= 0; j = j - 1)
+            for (int j = cargo.GetItemCount() - 1; j >= 0; j--)
             {
                 EntityAI cargoItem = cargo.GetItem(j);
                 if (cargoItem)
                 {
                     GetGame().ObjectDelete(cargoItem);
-                    cleared = cleared + 1;
+                    cleared++;
                 }
             }
         }

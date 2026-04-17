@@ -108,7 +108,7 @@ class LFV_IdMap
         }
 
         int count = 0;
-        for (int i = 0; i < data.m_Mapping.Count(); i = i + 1)
+        for (int i = 0; i < data.m_Mapping.Count(); i++)
         {
             LFV_IdMapEntry entry = data.m_Mapping[i];
             if (!entry) continue;
@@ -116,7 +116,7 @@ class LFV_IdMap
             if (entry.m_StorageId == "") continue;
 
             outMap.Set(entry.m_PersistentId, entry.m_StorageId);
-            count = count + 1;
+            count++;
         }
 
         string msg = "IdMap: loaded ";
@@ -140,7 +140,7 @@ class LFV_IdMap
         if (containerStates)
         {
             sidToContainer = new map<string, ItemBase>();
-            for (int cs = 0; cs < containerStates.Count(); cs = cs + 1)
+            for (int cs = 0; cs < containerStates.Count(); cs++)
             {
                 ItemBase csContainer = containerStates.GetKey(cs);
                 LFV_ContainerState csState = containerStates.GetElement(cs);
@@ -153,7 +153,7 @@ class LFV_IdMap
 
         LFV_IdMapData data = new LFV_IdMapData();
 
-        for (int i = 0; i < inMap.Count(); i = i + 1)
+        for (int i = 0; i < inMap.Count(); i++)
         {
             string persistId = inMap.GetKey(i);
             string storageId = inMap.GetElement(i);
@@ -194,7 +194,7 @@ class LFV_IdMap
                 DeleteFile(filePath);
             if (!CopyFile(tmpPath, filePath))
             {
-                // M1 fix: do NOT delete .tmp on copy failure --
+                // do NOT delete .tmp on copy failure --
                 // it's the only valid copy. IdMap rebuilds from
                 // live entities on restart, so this is recoverable.
                 string errMsg = "IdMap: CopyFile failed, keeping .tmp";

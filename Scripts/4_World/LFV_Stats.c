@@ -56,18 +56,18 @@ class LFV_Stats
 
     static void RecordVirtualize(float durationMs)
     {
-        s_VirtualizeCount = s_VirtualizeCount + 1;
+        s_VirtualizeCount++;
         s_TotalVirtualizeMs = s_TotalVirtualizeMs + durationMs;
-        s_OperationsThisRestart = s_OperationsThisRestart + 1;
+        s_OperationsThisRestart++;
         if (durationMs > s_MaxVirtualizeMs)
             s_MaxVirtualizeMs = durationMs;
     }
 
     static void RecordRestore(float durationMs)
     {
-        s_RestoreCount = s_RestoreCount + 1;
+        s_RestoreCount++;
         s_TotalRestoreMs = s_TotalRestoreMs + durationMs;
-        s_OperationsThisRestart = s_OperationsThisRestart + 1;
+        s_OperationsThisRestart++;
         if (durationMs > s_MaxRestoreMs)
             s_MaxRestoreMs = durationMs;
     }

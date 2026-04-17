@@ -41,7 +41,7 @@ class LFV_ContainerFile
 // -----------------------------------------------------------
 // JSON-safe mirror of LFV_ContainerFile + LFV_ItemRecord.
 //
-// JSON-FIX: JsonFileLoader hard-crashes on native engine types
+// JsonFileLoader hard-crashes on native engine types
 // (ItemBase, EntityAI, etc.) even when protected/null. The crash
 // is in C++ reflection, not Enforce Script -- it sees the FIELD TYPE
 // and tries to serialize it, causing a native segfault.
@@ -91,7 +91,7 @@ class LFV_ContainerFileJson
     static void ConvertItems(array<ref LFV_ItemRecord> srcItems, array<ref LFV_ItemRecordJson> dstItems)
     {
         if (!srcItems) return;
-        for (int i = 0; i < srcItems.Count(); i = i + 1)
+        for (int i = 0; i < srcItems.Count(); i++)
         {
             LFV_ItemRecord src = srcItems[i];
             if (!src) continue;
@@ -181,6 +181,10 @@ class LFV_ContainerState
     int     m_LastActivity;
     bool    m_IsLFVBarrel;      // true if LFV_Barrel_Base, false if vanilla
     bool    m_IsActionTriggered; // true if in ActionTriggeredContainers list
+    // Phase 5.5: set true while VirtualizeQueue is actively writing .lfv.
+    // Blocks OnEntityDestroyed from purging state mid-serialization, which
+    // would leave a corrupt blob + lose the in-flight DropQueue.
+    bool    m_IsVirtualizing;
     ref map<string, int> m_PlayerActionTimestamps;  // rate limiting per-player
 
     void LFV_ContainerState()
@@ -193,6 +197,7 @@ class LFV_ContainerState
         m_LastActivity = 0;
         m_IsLFVBarrel = false;
         m_IsActionTriggered = false;
+        m_IsVirtualizing = false;
         m_PlayerActionTimestamps = new map<string, int>();
     }
 }

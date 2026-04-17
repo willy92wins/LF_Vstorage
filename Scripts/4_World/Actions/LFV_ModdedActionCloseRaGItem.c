@@ -8,8 +8,12 @@
 //
 // Sequence: LFV virtualize FIRST, then super (Close).
 // Items must be captured while container is still open.
+//
+// Phase 2: gated behind #ifdef RaG_Core so servers without RaG
+// loaded compile this as empty (no hard dependency).
 // =========================================================
 
+#ifdef RaG_Core
 modded class ActionCloseRaGItem
 {
     // -----------------------------------------------------------
@@ -32,3 +36,4 @@ modded class ActionCloseRaGItem
         super.OnStartServer(action_data);
     }
 }
+#endif

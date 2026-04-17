@@ -48,6 +48,9 @@ modded class ItemBase
     // -----------------------------------------------------------
     // Untrack when entity is deleted from world
     // (admin wipe, CE cleanup, dismantle, etc.)
+    //
+    // Phase 1: route through centralized OnEntityDestroyed so all
+    // tracking structures are purged atomically.
     // -----------------------------------------------------------
     override void EEDelete(EntityAI parent)
     {
@@ -60,7 +63,7 @@ modded class ItemBase
             {
                 LFV_Module module = LFV_Module.GetModule();
                 if (module)
-                    module.UntrackContainer(this);
+                    module.OnEntityDestroyed(this);
             }
         }
         #endif

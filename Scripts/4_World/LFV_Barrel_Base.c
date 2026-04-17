@@ -133,7 +133,7 @@ class LFV_Barrel_Base : Barrel_ColorBase
         #ifdef SERVER
         if (GetGame().IsDedicatedServer())
         {
-            // C3 audit: if action already called OnCloseContainer,
+            // if action already called OnCloseContainer,
             // skip here to prevent double-call
             if (m_LFV_SkipCloseVirtualize)
             {

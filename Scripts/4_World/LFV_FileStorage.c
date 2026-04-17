@@ -19,21 +19,21 @@ class LFV_FileStorage
     // -----------------------------------------------------------
     static void WriteItemArray(FileSerializer file, array<ref LFV_ItemRecord> items, int depth)
     {
-        // C1 fix: pre-count non-null entries so written count matches
+        // pre-count non-null entries so written count matches
         // actual records. Prevents binary stream desync on read.
         int actualCount = 0;
         if (items)
         {
-            for (int j = 0; j < items.Count(); j = j + 1)
+            for (int j = 0; j < items.Count(); j++)
             {
                 if (items[j])
-                    actualCount = actualCount + 1;
+                    actualCount++;
             }
         }
         file.Write(actualCount);
         if (items)
         {
-            for (int i = 0; i < items.Count(); i = i + 1)
+            for (int i = 0; i < items.Count(); i++)
             {
                 LFV_ItemRecord rec = items[i];
                 if (!rec) continue;
@@ -89,20 +89,20 @@ class LFV_FileStorage
     // -----------------------------------------------------------
     static void WriteCartridgeArray(FileSerializer file, array<ref LFV_CartridgeData> rounds)
     {
-        // M4 fix: pre-count non-null entries (same pattern as C1 fix)
+        // pre-count non-null entries (same pattern as C1 fix)
         int actualCount = 0;
         if (rounds)
         {
-            for (int j = 0; j < rounds.Count(); j = j + 1)
+            for (int j = 0; j < rounds.Count(); j++)
             {
                 if (rounds[j])
-                    actualCount = actualCount + 1;
+                    actualCount++;
             }
         }
         file.Write(actualCount);
         if (rounds)
         {
-            for (int i = 0; i < rounds.Count(); i = i + 1)
+            for (int i = 0; i < rounds.Count(); i++)
             {
                 if (!rounds[i]) continue;
                 file.Write(rounds[i].m_MuzzleIdx);
@@ -120,7 +120,7 @@ class LFV_FileStorage
         items = new array<ref LFV_ItemRecord>();
         int count;
         if (!file.Read(count)) return false;
-        for (int i = 0; i < count; i = i + 1)
+        for (int i = 0; i < count; i++)
         {
             LFV_ItemRecord rec = new LFV_ItemRecord();
             if (!ReadItemRecord(file, rec, formatVersion, depth)) return false;
@@ -174,7 +174,7 @@ class LFV_FileStorage
         rounds = new array<ref LFV_CartridgeData>();
         int count;
         if (!file.Read(count)) return false;
-        for (int i = 0; i < count; i = i + 1)
+        for (int i = 0; i < count; i++)
         {
             LFV_CartridgeData cd = new LFV_CartridgeData();
             if (!file.Read(cd.m_MuzzleIdx)) return false;
@@ -335,7 +335,7 @@ class LFV_FileStorage
     // -----------------------------------------------------------
     // ATOMIC WRITE -- .tmp -> CopyFile -> Delete
     //
-    // H3 fix: .tmp is kept as last-resort fallback if crash occurs
+    // .tmp is kept as last-resort fallback if crash occurs
     // between DeleteFile and CopyFile. LoadWithFallback now checks
     // for .tmp after bak2 fails. The .tmp is only deleted after
     // the copy to basePath succeeds.
@@ -433,7 +433,7 @@ class LFV_FileStorage
             }
         }
 
-        // H3 fix: try .tmp as last resort (crash during AtomicSave
+        // try .tmp as last resort (crash during AtomicSave
         // left valid data in .tmp but basePath was already deleted)
         string tmpPath = basePath + LFV_Paths.TMP_EXT;
         if (FileExist(tmpPath))
@@ -481,7 +481,7 @@ class LFV_FileStorage
         if (FileExist(bak1))
         {
             CopyFile(bak1, bak2);
-            // C2 fix: must delete bak1 after copying to bak2,
+            // must delete bak1 after copying to bak2,
             // because DayZ CopyFile cannot overwrite existing files.
             // Without this, the next CopyFile(basePath, bak1) silently
             // fails and bak1 stays frozen to the first backup ever made.
@@ -513,13 +513,13 @@ class LFV_FileStorage
                 fullPath = fullPath + "/";
                 fullPath = fullPath + fileName;
 
-                // H3 fix: if the corresponding .lfv doesn't exist,
+                // if the corresponding .lfv doesn't exist,
                 // this .tmp may be a crash-recovery file. Keep it --
                 // LoadWithFallback will use it as last resort.
                 string lfvPath = fullPath.Substring(0, fullPath.Length() - 4); // strip .tmp
                 if (!FileExist(lfvPath))
                 {
-                    kept = kept + 1;
+                    kept++;
                     string keepMsg = "Keeping .tmp (no .lfv, possible recovery): ";
                     keepMsg = keepMsg + fileName;
                     LFV_Log.Warn(keepMsg);
@@ -527,7 +527,7 @@ class LFV_FileStorage
                 else
                 {
                     DeleteFile(fullPath);
-                    cleaned = cleaned + 1;
+                    cleaned++;
                 }
                 keepGoing = FindNextFile(handle, fileName, fileAttr);
             }
@@ -573,11 +573,11 @@ class LFV_FileStorage
         if (!items) return 0;
         if (depth >= LFV_Limits.MAX_ITEM_DEPTH) return 0;
         int nextDepth = depth + 1;
-        for (int i = 0; i < items.Count(); i = i + 1)
+        for (int i = 0; i < items.Count(); i++)
         {
             LFV_ItemRecord rec = items[i];
             if (!rec) continue;
-            total = total + 1;
+            total++;
             total = total + CountItemsRecursive(rec.m_Attachments, nextDepth);
             total = total + CountItemsRecursive(rec.m_Cargo, nextDepth);
         }
@@ -590,7 +590,7 @@ class LFV_FileStorage
     // Shared utility: used by SaveAdminJson (JSON-FIX) and
     // VirtualizeQueue MEM2 cleanup.
     //
-    // JSON-FIX: ItemBase is a native engine type that hard-crashes
+    // ItemBase is a native engine type that hard-crashes
     // JsonFileLoader even when protected. Nulling before
     // JsonSaveFile prevents the crash. Safe because no code
     // reads m_ItemRef after PrepareVirtualization -- item
@@ -599,7 +599,7 @@ class LFV_FileStorage
     static void ClearItemRefs(array<ref LFV_ItemRecord> items)
     {
         if (!items) return;
-        for (int i = 0; i < items.Count(); i = i + 1)
+        for (int i = 0; i < items.Count(); i++)
         {
             LFV_ItemRecord rec = items[i];
             if (!rec) continue;
@@ -617,7 +617,7 @@ class LFV_FileStorage
         if (!items) return;
         if (depth >= LFV_Limits.MAX_ITEM_DEPTH) return;
         int nextDepth = depth + 1;
-        for (int i = 0; i < items.Count(); i = i + 1)
+        for (int i = 0; i < items.Count(); i++)
         {
             LFV_ItemRecord rec = items[i];
             if (!rec) continue;
@@ -660,7 +660,7 @@ class LFV_FileStorage
     }
 
     // -----------------------------------------------------------
-    // M4 audit: Clean orphan .restoring markers on startup.
+    // Clean orphan .restoring markers on startup.
     // A .restoring marker without a corresponding .lfv is stale
     // (the restore completed but the marker wasn't cleaned up).
     // -----------------------------------------------------------
@@ -686,7 +686,7 @@ class LFV_FileStorage
                 if (!FileExist(lfvPath))
                 {
                     DeleteFile(fullPath);
-                    cleaned = cleaned + 1;
+                    cleaned++;
                 }
                 keepGoing = FindNextFile(handle, fileName, fileAttr);
             }

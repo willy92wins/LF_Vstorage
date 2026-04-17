@@ -43,7 +43,7 @@ class LFV_SpawnHelper
     // -----------------------------------------------------------
     // Spawn on ground near position (persistent).
     // Used by RestoreQueue fallback and DropQueue.
-    // A2 audit: unified from two identical methods.
+    // unified from two identical methods.
     // -----------------------------------------------------------
     static ItemBase SpawnOnGround(string classname, vector pos)
     {
@@ -161,7 +161,7 @@ class LFV_SpawnHelper
         int gridW = cargoSize[0];
         int gridH = cargoSize[1];
 
-        // M1 audit: early-exit if cargo is full (avoids gridW*gridH*2 engine calls)
+        // early-exit if cargo is full (avoids gridW*gridH*2 engine calls)
         int maxSlots = gridW * gridH;
         if (cargo.GetItemCount() >= maxSlots)
             return null;
@@ -169,9 +169,9 @@ class LFV_SpawnHelper
         int eceFlags = LFV_ECE.IN_INVENTORY;
 
         // Try every position with both orientations
-        for (int row = 0; row < gridH; row = row + 1)
+        for (int row = 0; row < gridH; row++)
         {
-            for (int col = 0; col < gridW; col = col + 1)
+            for (int col = 0; col < gridW; col++)
             {
                 // Try without flip
                 InventoryLocation loc1 = new InventoryLocation();
@@ -250,7 +250,7 @@ class LFV_SpawnHelper
             // Clear existing rounds first
             mag.ServerSetAmmoCount(0);
             // Re-insert saved rounds
-            for (int mi = 0; mi < record.m_MagRounds.Count(); mi = mi + 1)
+            for (int mi = 0; mi < record.m_MagRounds.Count(); mi++)
             {
                 LFV_CartridgeData mcd = record.m_MagRounds[mi];
                 mag.ServerStoreCartridge(mcd.m_Damage, mcd.m_AmmoType);
@@ -261,14 +261,14 @@ class LFV_SpawnHelper
         if (weapon)
         {
             // Chamber rounds
-            for (int ci = 0; ci < record.m_ChamberRounds.Count(); ci = ci + 1)
+            for (int ci = 0; ci < record.m_ChamberRounds.Count(); ci++)
             {
                 LFV_CartridgeData crd = record.m_ChamberRounds[ci];
                 weapon.PushCartridgeToChamber(crd.m_MuzzleIdx, crd.m_Damage, crd.m_AmmoType);
             }
 
             // Internal magazine rounds
-            for (int ii = 0; ii < record.m_InternalMagRounds.Count(); ii = ii + 1)
+            for (int ii = 0; ii < record.m_InternalMagRounds.Count(); ii++)
             {
                 LFV_CartridgeData ird = record.m_InternalMagRounds[ii];
                 weapon.PushCartridgeToInternalMagazine(ird.m_MuzzleIdx, ird.m_Damage, ird.m_AmmoType);

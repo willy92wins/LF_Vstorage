@@ -44,7 +44,7 @@ modded class ActionCloseBarrel
             LFV_Module module = LFV_Module.GetModule();
             if (module)
             {
-                // RATE-FIX: CheckRateLimit removed from close action.
+                // CheckRateLimit removed from close action.
                 // Previously, open and close shared a single cooldown timestamp,
                 // so opening then quickly closing triggered a false rate-limit error.
                 // Close doesn't need rate limiting because:
@@ -52,7 +52,7 @@ modded class ActionCloseBarrel
                 //   - Barrel with items: virtualization blocks further actions via m_IsProcessing
                 // Rate limiting remains on open action only (LFV_ModdedActionOpenBarrel).
 
-                // C3 audit: set flag on LFV barrels so Close() override
+                // set flag on LFV barrels so Close() override
                 // skips its OnCloseContainer call (prevents double-call)
                 LFV_Barrel_Base lfvBarrel = LFV_Barrel_Base.Cast(container);
                 if (lfvBarrel)

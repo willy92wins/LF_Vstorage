@@ -31,12 +31,32 @@ modded class LFV_Module
         LFV_FileStorage.CleanOrphanTmpFiles();
         LFV_FileStorage.CleanOrphanRestoreMarkers();
 
+        // Phase 1.5: external virtualization-mod conflict detection.
+        // If Expansion BB VirtualStorage or VSM is loaded alongside LFV,
+        // both will try to own container delete/respawn cycles and
+        // corrupt state. Default: disable LFV hooks; warn loudly.
+        // Admin can override with m_ForceEnableDespiteVS=true.
+        if (DetectExternalVirtualStorage())
+        {
+            if (m_Settings.m_ForceEnableDespiteVS)
+            {
+                LFV_Log.Warn("External virtual-storage mod detected but m_ForceEnableDespiteVS=true -- continuing at admin's risk");
+            }
+            else
+            {
+                LFV_Log.Error("External virtual-storage mod detected (Expansion BB VirtualStorage or VSM). LFV hooks DISABLED to prevent corruption. Set m_ForceEnableDespiteVS=true in settings.json to override.");
+                // Do not start timers; leave m_StartupComplete=false so hooks early-return.
+                return;
+            }
+        }
+
         if (m_Settings.m_AutoCloseEnabled)
         {
             StartAutoCloseTimer();
         }
 
-        StartProximityMonitor();
+        // ProximityMonitor removed Phase 1: virtualization is event-driven
+        // via action hooks (Phase 2) and LFV_API (Phase 4).
         StartIdMapSaveTimer();
         StartPeriodicScanTimer();
 
@@ -60,7 +80,10 @@ modded class LFV_Module
         GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(this.ScanAndReconcile, 10000, false);
         GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(this.RunCleanup, 120000, false);
 
-        string loadedMsg = "OnMissionLoaded -- scan in 10s, cleanup in 120s";
+        // Phase 1.1: open the gate. Hooks early-returned before this.
+        SetStartupComplete(true);
+
+        string loadedMsg = "OnMissionLoaded -- scan in 10s, cleanup in 120s, startup gate OPEN";
         LFV_Log.Info(loadedMsg);
     }
 
@@ -71,19 +94,18 @@ modded class LFV_Module
     {
         m_IsShuttingDown = true;
 
-        // H2 fix: cancel pending CallLater entries before stopping timers.
+        // cancel pending CallLater entries before stopping timers.
         // If server restarts before these fire (10s/120s), they'd execute
         // on a partially destroyed module, causing crashes.
         GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(this.ScanAndReconcile);
         GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(this.RunCleanup);
 
         StopAutoCloseTimer();
-        StopProximityMonitor();
         StopIdMapSaveTimer();
         StopPeriodicScanTimer();
         StopQueueProcessor();
 
-        for (int q = 0; q < m_ActiveQueues.Count(); q = q + 1)
+        for (int q = 0; q < m_ActiveQueues.Count(); q++)
         {
             LFV_Queue queue = m_ActiveQueues[q];
             if (!queue) continue;
@@ -105,7 +127,7 @@ modded class LFV_Module
         }
         m_ActiveQueues.Clear();
 
-        for (int p = 0; p < m_PendingQueues.Count(); p = p + 1)
+        for (int p = 0; p < m_PendingQueues.Count(); p++)
         {
             LFV_Queue pQueue = m_PendingQueues[p];
             if (!pQueue) continue;
@@ -129,15 +151,15 @@ modded class LFV_Module
         int budgetMs = m_Settings.m_ShutdownBudgetMs;
         int virtualized = 0;
 
-        // A2 audit: copy keys before iterating -- prevents issues if
+        // copy keys before iterating -- prevents issues if
         // VirtualizeSynchronous or engine callbacks modify the map
         ref array<ItemBase> shutdownContainers = new array<ItemBase>();
-        for (int sc = 0; sc < m_ContainerStates.Count(); sc = sc + 1)
+        for (int sc = 0; sc < m_ContainerStates.Count(); sc++)
         {
             shutdownContainers.Insert(m_ContainerStates.GetKey(sc));
         }
 
-        for (int i = 0; i < shutdownContainers.Count(); i = i + 1)
+        for (int i = 0; i < shutdownContainers.Count(); i++)
         {
             int elapsed = GetGame().GetTime() - startTime;
             if (elapsed > budgetMs)
@@ -160,7 +182,7 @@ modded class LFV_Module
                 if (container && LFV_StateMachine.HasCargoOrAttachments(container))
                 {
                     VirtualizeSynchronous(container, state, false);
-                    virtualized = virtualized + 1;
+                    virtualized++;
                 }
                 else
                 {
@@ -205,10 +227,10 @@ modded class LFV_Module
     {
         int startTime = GetGame().GetTime();
 
-        // A6 audit: pre-build inverse map (storageId -> container)
+        // pre-build inverse map (storageId -> container)
         // to avoid O(n^2) lookup during reconciliation
         ref map<string, ItemBase> sidToContainer = new map<string, ItemBase>();
-        for (int t = 0; t < m_ContainerStates.Count(); t = t + 1)
+        for (int t = 0; t < m_ContainerStates.Count(); t++)
         {
             LFV_ContainerState ts = m_ContainerStates.GetElement(t);
             ItemBase tc = m_ContainerStates.GetKey(t);
@@ -267,7 +289,7 @@ modded class LFV_Module
                         orphanMsg = orphanMsg + fileData.m_StorageId;
                         LFV_Log.Warn(orphanMsg);
                     }
-                    reconciledCount = reconciledCount + 1;
+                    reconciledCount++;
                 }
                 keepGoing = FindNextFile(handle, fileName, fileAttr);
             }
@@ -289,7 +311,7 @@ modded class LFV_Module
     override ItemBase FindContainerByStorageId(string storageId, string containerClass, vector position)
     {
         // First check if any tracked container has this storageId
-        for (int i = 0; i < m_ContainerStates.Count(); i = i + 1)
+        for (int i = 0; i < m_ContainerStates.Count(); i++)
         {
             LFV_ContainerState state = m_ContainerStates.GetElement(i);
             if (state.m_StorageId == storageId)
@@ -302,7 +324,7 @@ modded class LFV_Module
         // Layer 2: IdMap reverse lookup -- find entity by PersistentID
         // The IdMap maps PersistentID -> StorageId. We need to find
         // which PersistentID maps to our storageId, then look up entity.
-        for (int j = 0; j < m_PersistentIdToStorageId.Count(); j = j + 1)
+        for (int j = 0; j < m_PersistentIdToStorageId.Count(); j++)
         {
             string mappedSid = m_PersistentIdToStorageId.GetElement(j);
             if (mappedSid == storageId)
@@ -334,7 +356,7 @@ modded class LFV_Module
         array<EntityAI> nearEntities = new array<EntityAI>();
         DayZPlayerUtils.SceneGetEntitiesInBox(minPos, maxPos, nearEntities, QueryFlags.DYNAMIC);
 
-        for (int i = 0; i < nearEntities.Count(); i = i + 1)
+        for (int i = 0; i < nearEntities.Count(); i++)
         {
             ItemBase item = ItemBase.Cast(nearEntities[i]);
             if (item && item.GetType() == containerClass)
@@ -363,9 +385,113 @@ modded class LFV_Module
     }
 
     // -----------------------------------------------------------
-    // C3 fix: Untrack a container when it's destroyed/deleted.
-    // Removes from m_ContainerStates and IdMap to prevent
-    // stale references and memory leaks.
+    // Phase 1.5: detect other virtualization mods loaded alongside us.
+    //
+    // Known conflicts (CfgPatches class names verified from real
+    // config.bin extracts / dependent-mod requiredAddons[]):
+    //   - VSM core: VSM_Core (CONFIRMED via VSM addon configs
+    //      that list "VSM_Core" in their requiredAddons[])
+    //   - Expansion BB VirtualStorage: DayZExpansion_BaseBuilding_Scripts
+    //      (CONFIRMED via salutesh/DayZ-Expansion-Scripts repo,
+    //       DayZExpansion/BaseBuilding/Scripts/config.cpp). The Preload
+    //       counterpart DayZExpansion_BaseBuilding_Preload is also
+    //       checked as a belt-and-suspenders — either being loaded
+    //       implies the BB module is active.
+    // -----------------------------------------------------------
+    bool DetectExternalVirtualStorage()
+    {
+        string expansionBbScripts = "CfgPatches DayZExpansion_BaseBuilding_Scripts";
+        if (GetGame().ConfigIsExisting(expansionBbScripts))
+            return true;
+
+        string expansionBbPreload = "CfgPatches DayZExpansion_BaseBuilding_Preload";
+        if (GetGame().ConfigIsExisting(expansionBbPreload))
+            return true;
+
+        string vsmCoreProbe = "CfgPatches VSM_Core";
+        if (GetGame().ConfigIsExisting(vsmCoreProbe))
+            return true;
+
+        return false;
+    }
+
+    // -----------------------------------------------------------
+    // Centralized entity-destroyed handler (Phase 1).
+    //
+    // Single entry point called by ModdedItemBase.EEDelete and
+    // ModdedBarrelColorBase.EEDelete. Purges the entity from every
+    // tracking structure in one place:
+    //   - m_ContainerStates (via UntrackContainer)
+    //   - m_QueuedContainers + active/pending queue containers
+    //     (via UntrackContainer -> CancelQueueForContainer)
+    //   - m_AutoCloseToClose (explicit here; transient array built
+    //     per tick so rare to matter, but cheap belt-and-suspenders)
+    //
+    // Gate: runs regardless of m_StartupComplete -- stale cleanup
+    // must always succeed.
+    // -----------------------------------------------------------
+    override void OnEntityDestroyed(EntityAI entity)
+    {
+        ItemBase container = ItemBase.Cast(entity);
+        if (!container) return;
+
+        // Purge from transient auto-close list if present
+        if (m_AutoCloseToClose)
+        {
+            int acIdx = m_AutoCloseToClose.Find(container);
+            if (acIdx >= 0)
+                m_AutoCloseToClose.Remove(acIdx);
+        }
+
+        // Phase 5.5: if a VirtualizeQueue is mid-serialization or a
+        // DropQueue is working, we CANNOT purge the state map or
+        // cancel queues — the queues own the entity lifetime and
+        // will clean up in their OnComplete. Purging here would:
+        //   - leave the .lfv in a half-written state, or
+        //   - cancel a DropQueue that was about to drop items from
+        //     a dead container to the ground (data loss).
+        // Both queues guard against null m_Container in ProcessBatch,
+        // so we can safely let them run to completion without the
+        // entity still existing.
+        LFV_ContainerState state = GetContainerState(container);
+        if (state && state.m_IsVirtualizing)
+        {
+            LFV_Log.Warn("OnEntityDestroyed: deferring purge -- VirtualizeQueue active; queue will self-clean");
+            return;
+        }
+        if (HasActiveDropQueue(container))
+        {
+            LFV_Log.Warn("OnEntityDestroyed: deferring purge -- DropQueue active; queue will self-clean");
+            return;
+        }
+
+        // Main purge (state map + queues + IdMap)
+        UntrackContainer(container);
+    }
+
+    // Does this container have an active (not cancelled) DropQueue?
+    bool HasActiveDropQueue(ItemBase container)
+    {
+        if (!container) return false;
+        for (int i = 0; i < m_ActiveQueues.Count(); i++)
+        {
+            LFV_Queue q = m_ActiveQueues[i];
+            if (q && q.GetContainer() == container && q.GetQueueType() == LFV_QueueType.DROP)
+                return true;
+        }
+        for (int j = 0; j < m_PendingQueues.Count(); j++)
+        {
+            LFV_Queue pq = m_PendingQueues[j];
+            if (pq && pq.GetContainer() == container && pq.GetQueueType() == LFV_QueueType.DROP)
+                return true;
+        }
+        return false;
+    }
+
+    // -----------------------------------------------------------
+    // Untrack a container from m_ContainerStates + IdMap + queues.
+    // Prefer calling OnEntityDestroyed from EEDelete -- this is the
+    // underlying worker kept public for admin commands / edge cases.
     // -----------------------------------------------------------
     override void UntrackContainer(ItemBase container)
     {
@@ -384,33 +510,33 @@ modded class LFV_Module
             if (pidKey != "")
             {
                 LFV_IdMap.Remove(m_PersistentIdToStorageId, pidKey);
-                m_IdMapDirtyCount = m_IdMapDirtyCount + 1;
+                m_IdMapDirtyCount++;
             }
         }
 
         m_ContainerStates.Remove(container);
 
-        // A4 audit: keep stat accurate
+        // keep stat accurate
         LFV_Stats.s_TotalContainers = LFV_Stats.s_TotalContainers - 1;
         if (LFV_Stats.s_TotalContainers < 0)
             LFV_Stats.s_TotalContainers = 0;
     }
 
     // -----------------------------------------------------------
-    // C3 fix: Sweep stale references from m_ContainerStates.
+    // Sweep stale references from m_ContainerStates.
     // Called periodically from AutoCloseCheck (every 10s).
     // Removes entries where the entity is null (deleted by engine).
     // -----------------------------------------------------------
     void SweepStaleContainers()
     {
         int removed = 0;
-        for (int i = m_ContainerStates.Count() - 1; i >= 0; i = i - 1)
+        for (int i = m_ContainerStates.Count() - 1; i >= 0; i--)
         {
             ItemBase container = m_ContainerStates.GetKey(i);
             if (!container)
             {
                 m_ContainerStates.RemoveElement(i);
-                removed = removed + 1;
+                removed++;
             }
         }
 
@@ -428,7 +554,7 @@ modded class LFV_Module
     // Checks IdMap first (PersistentID -> StorageId mapping)
     // and verifies a .lfv file exists. Falls back to generating
     // a new ID if no mapping or file found.
-    // Fix B: prevents race condition where new random IDs
+    // prevents race condition where new random IDs
     // don't match existing .lfv files after server restart.
     // -----------------------------------------------------------
     string ResolveStorageId(ItemBase container)
@@ -458,7 +584,7 @@ modded class LFV_Module
     // -----------------------------------------------------------
     // Resolve the initial state for a container based on whether
     // a .lfv file exists for the given storageId.
-    // Fix B: newly tracked containers start as VIRTUALIZED if
+    // newly tracked containers start as VIRTUALIZED if
     // they have an existing .lfv file (pending restore).
     // -----------------------------------------------------------
     int ResolveInitialState(string storageId)
@@ -501,11 +627,12 @@ modded class LFV_Module
     {
         if (!container) return;
         if (m_IsShuttingDown) return;
+        if (!m_StartupComplete) return;
 
         LFV_ContainerState state = GetContainerState(container);
         if (!state)
         {
-            // Fix B: resolve existing StorageId from IdMap before generating new
+            // resolve existing StorageId from IdMap before generating new
             string sid = ResolveStorageId(container);
             int initState = ResolveInitialState(sid);
             TrackContainer(container, sid, initState);
@@ -514,7 +641,7 @@ modded class LFV_Module
 
         state.m_LastActivity = GetGame().GetTime();
 
-        // A2 fix: reject open during active processing (RESTORING/VIRTUALIZING)
+        // reject open during active processing (RESTORING/VIRTUALIZING)
         if (state.m_IsProcessing)
         {
             if (player)
@@ -569,11 +696,12 @@ modded class LFV_Module
     {
         if (!container) return;
         if (m_IsShuttingDown) return;
+        if (!m_StartupComplete) return;
 
         LFV_ContainerState state = GetContainerState(container);
         if (!state)
         {
-            // Fix B: resolve existing StorageId from IdMap before generating new
+            // resolve existing StorageId from IdMap before generating new
             string sid = ResolveStorageId(container);
             int initState = ResolveInitialState(sid);
             TrackContainer(container, sid, initState);
@@ -582,7 +710,7 @@ modded class LFV_Module
 
         state.m_LastActivity = GetGame().GetTime();
 
-        // A2 fix: reject close during active processing
+        // reject close during active processing
         if (state.m_IsProcessing)
         {
             if (player)
@@ -651,7 +779,7 @@ modded class LFV_Module
             // finishes deleting ALL remaining items in one tick, then
             // transitions to VIRTUALIZED via OnComplete. After that,
             // DropQueue safely spawns from .lfv with zero duplication risk.
-            for (int vq = m_ActiveQueues.Count() - 1; vq >= 0; vq = vq - 1)
+            for (int vq = m_ActiveQueues.Count() - 1; vq >= 0; vq--)
             {
                 vQueue = m_ActiveQueues[vq];
                 if (vQueue && vQueue.GetContainer() == container && vQueue.GetQueueType() == LFV_QueueType.VIRTUALIZE)
@@ -702,7 +830,7 @@ modded class LFV_Module
         bool found = false;
 
         // Check active queues
-        for (int i = m_ActiveQueues.Count() - 1; i >= 0; i = i - 1)
+        for (int i = m_ActiveQueues.Count() - 1; i >= 0; i--)
         {
             LFV_Queue queue = m_ActiveQueues[i];
             if (queue && queue.GetContainer() == container)
@@ -714,7 +842,7 @@ modded class LFV_Module
         }
 
         // Check pending queues
-        for (int j = m_PendingQueues.Count() - 1; j >= 0; j = j - 1)
+        for (int j = m_PendingQueues.Count() - 1; j >= 0; j--)
         {
             LFV_Queue pQueue = m_PendingQueues[j];
             if (pQueue && pQueue.GetContainer() == container)
@@ -891,7 +1019,7 @@ modded class LFV_Module
         {
             // Attachments
             int attCount = inv.AttachmentCount();
-            for (int a = 0; a < attCount; a = a + 1)
+            for (int a = 0; a < attCount; a++)
             {
                 EntityAI attEnt = inv.GetAttachmentFromIndex(a);
                 if (!attEnt) continue;
@@ -911,7 +1039,7 @@ modded class LFV_Module
             {
                 int cargoCount = cargo.GetItemCount();
 
-                for (int c = 0; c < cargoCount; c = c + 1)
+                for (int c = 0; c < cargoCount; c++)
                 {
                     EntityAI cargoEnt = cargo.GetItem(c);
                     if (!cargoEnt) continue;
@@ -921,7 +1049,7 @@ modded class LFV_Module
                         GameInventory cargoInv = cargoItem.GetInventory();
                         if (!cargoInv) continue;
                         InventoryLocation cargoLoc = new InventoryLocation();
-                        // LOC-FIX: fallback to default position if GetCurrentInventoryLocation fails.
+                        // fallback to default position if GetCurrentInventoryLocation fails.
                         // Vanilla can return false for freshly placed items or mod items with
                         // non-standard inventory. Previously these items were silently DROPPED,
                         // causing data loss (server logs confirmed: 3 items captured, 1 saved).
@@ -980,7 +1108,7 @@ modded class LFV_Module
             string topClass = "";
             int topCount = 0;
 
-            for (int i = 0; i < counts.Count(); i = i + 1)
+            for (int i = 0; i < counts.Count(); i++)
             {
                 string key = counts.GetKey(i);
                 int val = counts.GetElement(i);
@@ -999,7 +1127,7 @@ modded class LFV_Module
             manifest = manifest + ":";
             manifest = manifest + topCount.ToString();
             counts.Remove(topClass);
-            added = added + 1;
+            added++;
         }
 
         return manifest;
@@ -1080,7 +1208,7 @@ modded class LFV_Module
             result = result + countStr;
             result = result + "x ";
             result = result + displayName;
-            entryCount = entryCount + 1;
+            entryCount++;
         }
 
         return result;
@@ -1108,7 +1236,7 @@ modded class LFV_Module
     void CountClassnames(array<ref LFV_ItemRecord> items, map<string, int> counts)
     {
         if (!items) return;
-        for (int i = 0; i < items.Count(); i = i + 1)
+        for (int i = 0; i < items.Count(); i++)
         {
             LFV_ItemRecord rec = items[i];
             if (!rec) continue;
@@ -1133,7 +1261,7 @@ modded class LFV_Module
     void PurgeFromArray(array<ref LFV_ItemRecord> items, bool purgeDecay)
     {
         if (!items) return;
-        for (int i = items.Count() - 1; i >= 0; i = i - 1)
+        for (int i = items.Count() - 1; i >= 0; i--)
         {
             LFV_ItemRecord rec = items[i];
             if (!rec)
@@ -1175,7 +1303,7 @@ modded class LFV_Module
         if (!inv) return;
 
         // Attachments (backward)
-        for (int i = inv.AttachmentCount() - 1; i >= 0; i = i - 1)
+        for (int i = inv.AttachmentCount() - 1; i >= 0; i--)
         {
             EntityAI att = inv.GetAttachmentFromIndex(i);
             if (att)
@@ -1186,7 +1314,7 @@ modded class LFV_Module
         CargoBase cargo = inv.GetCargo();
         if (cargo)
         {
-            for (int j = cargo.GetItemCount() - 1; j >= 0; j = j - 1)
+            for (int j = cargo.GetItemCount() - 1; j >= 0; j--)
             {
                 EntityAI cargoItem = cargo.GetItem(j);
                 if (cargoItem)
@@ -1280,7 +1408,7 @@ modded class LFV_Module
         int initialState = LFV_State.IDLE;
         if (hasVirtualItems)
         {
-            // DUP-FIX: Verify the .lfv actually exists before committing
+            // Verify the .lfv actually exists before committing
             // to VIRTUALIZED state. If the .lfv was deleted after a
             // successful restore (anti-duplication) and the server crashed
             // before the engine persisted HasItems=false, we'd end up in
@@ -1311,32 +1439,6 @@ modded class LFV_Module
         TrackContainer(barrel, sid, initialState);
     }
 
-    // -----------------------------------------------------------
-    // Auto-register a vanilla container discovered by ProximityMonitor
-    // (Sprint 4, #10)
-    //
-    // For containers in the whitelist that weren't tracked before
-    // (e.g. newly placed by player, or loaded by CE after startup).
-    // -----------------------------------------------------------
-    override void AutoRegisterVanillaContainer(ItemBase container)
-    {
-        if (!container) return;
-        if (m_ContainerStates.Contains(container)) return;
-
-        // Fix B: resolve existing StorageId from IdMap before generating new
-        string sid = ResolveStorageId(container);
-        int initState = ResolveInitialState(sid);
-        TrackContainer(container, sid, initState);
-
-        // Eager-add to ProximityMonitor (skip waiting for ~90s rebuild)
-        if (m_ProximityMonitor)
-            m_ProximityMonitor.AddContainer(container);
-
-        string msg = "Auto-registered vanilla container: ";
-        msg = msg + container.GetType();
-        LFV_Log.Info(msg);
-    }
-
     // =========================================================
     // QUEUE MANAGEMENT -- Sprint 2
     // =========================================================
@@ -1348,7 +1450,7 @@ modded class LFV_Module
     {
         if (!queue) return;
 
-        // M2 fix: reject if pending queue is full
+        // reject if pending queue is full
         if (m_PendingQueues.Count() >= m_Settings.m_MaxPendingQueues && m_ActiveQueues.Count() >= m_Settings.m_MaxConcurrentQueues)
         {
             string limitMsg = "Queue limit reached (";
@@ -1415,7 +1517,7 @@ modded class LFV_Module
         }
 
         // Process each active queue
-        for (int i = m_ActiveQueues.Count() - 1; i >= 0; i = i - 1)
+        for (int i = m_ActiveQueues.Count() - 1; i >= 0; i--)
         {
             LFV_Queue queue = m_ActiveQueues[i];
             if (!queue)
@@ -1532,7 +1634,7 @@ modded class LFV_Module
         }
 
         LFV_IdMap.Register(m_PersistentIdToStorageId, pidKey, storageId);
-        m_IdMapDirtyCount = m_IdMapDirtyCount + 1;
+        m_IdMapDirtyCount++;
     }
 
     // -----------------------------------------------------------
@@ -1569,7 +1671,7 @@ modded class LFV_Module
     // Called every 300s -- saves if dirty, always sweeps stale refs
     void OnIdMapSaveTimerTick()
     {
-        // C3 fix: sweep stale references even if AutoClose is disabled.
+        // sweep stale references even if AutoClose is disabled.
         // This timer always runs (300s interval), providing a safety net.
         SweepStaleContainers();
 
@@ -1623,7 +1725,7 @@ modded class LFV_Module
         int now = GetGame().GetTime();
         int stateCount = m_ContainerStates.Count();
         int requeued = 0;
-        for (int si = 0; si < stateCount; si = si + 1)
+        for (int si = 0; si < stateCount; si++)
         {
             ItemBase safetyContainer = m_ContainerStates.GetKey(si);
             LFV_ContainerState safetyState = m_ContainerStates.GetElement(si);
@@ -1637,7 +1739,7 @@ modded class LFV_Module
             if (elapsed > idleThresholdMs)
             {
                 RequestVirtualize(safetyContainer);
-                requeued = requeued + 1;
+                requeued++;
             }
         }
         if (requeued > 0)
@@ -1693,48 +1795,18 @@ modded class LFV_Module
     }
 
     // =========================================================
-    // PROXIMITY MONITOR -- Sprint 3 Phase D
+    // REQUEST RESTORE / VIRTUALIZE -- still used by PeriodicScan
+    // safety net (line ~1640). ProximityMonitor removed Phase 1.
     // =========================================================
 
     // -----------------------------------------------------------
-    // Start proximity monitor for non-barrel containers
-    // -----------------------------------------------------------
-    void StartProximityMonitor()
-    {
-        m_ProximityMonitor = new LFV_ProximityMonitor(this);
-
-        float intervalSec = m_Settings.m_ProximityCheckInterval;
-        intervalSec = intervalSec / 1000.0;
-
-        m_ProximityTimer = new Timer(CALL_CATEGORY_GAMEPLAY);
-        m_ProximityTimer.Run(intervalSec, m_ProximityMonitor, "OnTick", null, true);
-
-        string msg = "ProximityMonitor started (";
-        msg = msg + m_Settings.m_ProximityCheckInterval.ToString();
-        msg = msg + "ms interval)";
-        LFV_Log.Info(msg);
-    }
-
-    // -----------------------------------------------------------
-    // Stop proximity monitor
-    // -----------------------------------------------------------
-    void StopProximityMonitor()
-    {
-        if (m_ProximityTimer)
-        {
-            m_ProximityTimer.Stop();
-            m_ProximityTimer = null;
-        }
-        m_ProximityMonitor = null;
-    }
-
-    // -----------------------------------------------------------
-    // Request restore for a container (called by ProximityMonitor)
+    // Request restore for a container
     // -----------------------------------------------------------
     override void RequestRestore(ItemBase container)
     {
         if (!container) return;
         if (m_IsShuttingDown) return;
+        if (!m_StartupComplete) return;
 
         LFV_ContainerState state = GetContainerState(container);
         if (!state) return;
@@ -1742,25 +1814,25 @@ modded class LFV_Module
         if (state.m_State != LFV_State.VIRTUALIZED) return;
         if (HasQueueForContainer(container)) return;
 
-        // Update activity timestamp to prevent immediate re-virtualization
-        // after restore completes (anti ping-pong with ProximityMonitor)
+        // Refresh activity so we don't re-virtualize immediately on next tick
         state.m_LastActivity = GetGame().GetTime();
 
         LFV_RestoreQueue queue = new LFV_RestoreQueue(container, state, m_Settings.m_BatchSize);
         EnqueueOperation(queue);
 
-        string msg = "ProximityMonitor: restore requested for ";
+        string msg = "RequestRestore: queued for ";
         msg = msg + container.GetType();
         LFV_Log.Info(msg);
     }
 
     // -----------------------------------------------------------
-    // Request virtualize for a container (called by ProximityMonitor)
+    // Request virtualize for a container (PeriodicScan safety net)
     // -----------------------------------------------------------
     override void RequestVirtualize(ItemBase container)
     {
         if (!container) return;
         if (m_IsShuttingDown) return;
+        if (!m_StartupComplete) return;
 
         LFV_ContainerState state = GetContainerState(container);
         if (!state) return;
@@ -1772,7 +1844,7 @@ modded class LFV_Module
         LFV_VirtualizeQueue queue = new LFV_VirtualizeQueue(container, state, m_Settings.m_BatchSize, true);
         EnqueueOperation(queue);
 
-        string msg = "ProximityMonitor: virtualize requested for ";
+        string msg = "RequestVirtualize: queued for ";
         msg = msg + container.GetType();
         LFV_Log.Info(msg);
     }
@@ -1791,7 +1863,7 @@ modded class LFV_Module
             return false;
         if (m_Settings.m_AdminUIDs.Count() == 0)
             return false;
-        for (int i = 0; i < m_Settings.m_AdminUIDs.Count(); i = i + 1)
+        for (int i = 0; i < m_Settings.m_AdminUIDs.Count(); i++)
         {
             if (m_Settings.m_AdminUIDs[i] == uid)
                 return true;
@@ -1807,7 +1879,7 @@ modded class LFV_Module
     // -----------------------------------------------------------
     override void HandleAdminCommandFromRPC(string command, PlayerIdentity sender)
     {
-        // A1 audit: verify sender is in admin UID list
+        // verify sender is in admin UID list
         if (!sender)
             return;
 
@@ -1820,7 +1892,7 @@ modded class LFV_Module
             return;
         }
 
-        // M7 audit: normalize command (trim + lowercase)
+        // normalize command (trim + lowercase)
         command.Trim();
         command.ToLower();
 
@@ -1875,16 +1947,16 @@ modded class LFV_Module
         int idle = 0;
         int virtualized = 0;
         int processing = 0;
-        for (int i = 0; i < m_ContainerStates.Count(); i = i + 1)
+        for (int i = 0; i < m_ContainerStates.Count(); i++)
         {
             LFV_ContainerState st = m_ContainerStates.GetElement(i);
             if (!st) continue;
             if (st.m_State == LFV_State.IDLE)
-                idle = idle + 1;
+                idle++;
             else if (st.m_State == LFV_State.VIRTUALIZED)
-                virtualized = virtualized + 1;
+                virtualized++;
             else
-                processing = processing + 1;
+                processing++;
         }
 
         string stateInfo = " | IDLE: ";
@@ -1988,7 +2060,7 @@ modded class LFV_Module
     {
         if (m_IsShuttingDown) return;
 
-        // C3 fix: sweep stale references every AutoClose tick (10s)
+        // sweep stale references every AutoClose tick (10s)
         SweepStaleContainers();
 
         if (m_ContainerStates.Count() == 0) return;
@@ -2005,7 +2077,7 @@ modded class LFV_Module
         // Collect containers to close (reuse array, avoid modifying map during iteration)
         m_AutoCloseToClose.Clear();
 
-        for (int i = 0; i < m_ContainerStates.Count(); i = i + 1)
+        for (int i = 0; i < m_ContainerStates.Count(); i++)
         {
             ItemBase container = m_ContainerStates.GetKey(i);
             LFV_ContainerState state = m_ContainerStates.GetElement(i);
@@ -2037,7 +2109,7 @@ modded class LFV_Module
             bool playerNearby = false;
             vector barrelPos = barrel.GetPosition();
 
-            for (int p = 0; p < m_AutoClosePlayers.Count(); p = p + 1)
+            for (int p = 0; p < m_AutoClosePlayers.Count(); p++)
             {
                 Man man = m_AutoClosePlayers[p];
                 if (!man) continue;
@@ -2065,7 +2137,7 @@ modded class LFV_Module
         }
 
         // Close collected containers
-        for (int c = 0; c < m_AutoCloseToClose.Count(); c = c + 1)
+        for (int c = 0; c < m_AutoCloseToClose.Count(); c++)
         {
             ItemBase closeTarget = m_AutoCloseToClose[c];
             Barrel_ColorBase closeBarrel = Barrel_ColorBase.Cast(closeTarget);
@@ -2075,7 +2147,7 @@ modded class LFV_Module
                 closeMsg = closeMsg + closeBarrel.GetType();
                 LFV_Log.Info(closeMsg);
 
-                // AC-FIX: For vanilla whitelisted barrels (Barrel_Blue, etc.),
+                // For vanilla whitelisted barrels (Barrel_Blue, etc.),
                 // Close() does NOT trigger OnCloseContainer (only LFV_Barrel_Base
                 // overrides Close()). We must call OnCloseContainer explicitly
                 // so items are virtualized before the barrel closes.

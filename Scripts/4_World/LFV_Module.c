@@ -41,16 +41,15 @@ class LFV_Module : CF_ModuleWorld
     protected ref array<Man> m_AutoClosePlayers;
     protected ref array<ItemBase> m_AutoCloseToClose;
 
-    // --- Proximity monitor ---
-    protected ref LFV_ProximityMonitor m_ProximityMonitor;
-    protected ref Timer m_ProximityTimer;
-
     // --- IdMap periodic save ---
     protected ref Timer m_IdMapSaveTimer;
     protected int m_IdMapDirtyCount;
 
     // --- Periodic scan ---
     protected ref Timer m_PeriodicScanTimer;
+
+    // --- Startup gate: hooks early-return until OnMissionLoaded fires ---
+    protected bool m_StartupComplete;
 
     // -----------------------------------------------------------
     // Constructor
@@ -68,6 +67,7 @@ class LFV_Module : CF_ModuleWorld
         m_AutoClosePlayers = new array<Man>();
         m_AutoCloseToClose = new array<ItemBase>();
         m_IdMapDirtyCount = 0;
+        m_StartupComplete = false;
 
         // Init Registry with defaults immediately so ActionCondition
         // works on client without waiting for server RPC.
@@ -82,6 +82,8 @@ class LFV_Module : CF_ModuleWorld
     map<string, string> GetPersistentIdMap() { return m_PersistentIdToStorageId; }
     int GetTrackedCount() { return m_ContainerStates.Count(); }
     ItemBase GetTrackedContainerAt(int index) { return m_ContainerStates.GetKey(index); }
+    bool IsStartupComplete() { return m_StartupComplete; }
+    void SetStartupComplete(bool v) { m_StartupComplete = v; }
 
     LFV_ContainerState GetContainerState(ItemBase container)
     {
@@ -140,9 +142,9 @@ class LFV_Module : CF_ModuleWorld
     void OnCloseContainer(ItemBase container, PlayerBase player) {}
     void OnCloseContainer(ItemBase container) {}
     bool IsTracked(ItemBase container) { return false; }
-    void AutoRegisterVanillaContainer(ItemBase container) {}
     void RequestRestore(ItemBase container) {}
     void RequestVirtualize(ItemBase container) {}
     void HandleAdminCommandFromRPC(string command, PlayerIdentity sender) {}
     void UntrackContainer(ItemBase container) {}
+    void OnEntityDestroyed(EntityAI entity) {}
 }

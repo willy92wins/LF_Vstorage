@@ -110,7 +110,7 @@ class LFV_RPC
 {
     static const int SYNC_SETTINGS   = 24701;
     static const int ADMIN_COMMAND   = 24702;
-    // A3 audit: ADMIN_RESPONSE (24703) removed -- responses use ERPCs.RPC_USER_ACTION_MESSAGE
+    // ADMIN_RESPONSE (24703) removed -- responses use ERPCs.RPC_USER_ACTION_MESSAGE
     static const int MANIFEST_UPDATE = 24704;
 }
 

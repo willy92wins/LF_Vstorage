@@ -132,7 +132,7 @@ class LFV_ItemRecord
                 GetGame().ConfigGetTextArray(chamberPath, magNames);
         }
 
-        for (int i = 0; i < magNames.Count(); i = i + 1)
+        for (int i = 0; i < magNames.Count(); i++)
         {
             string compatPath = "CfgMagazines " + magNames[i] + " ammo";
             if (GetGame().ConfigIsExisting(compatPath))
@@ -245,7 +245,7 @@ class LFV_ItemRecord
             int muzzleCount = weapon.GetMuzzleCount();
             if (muzzleCount > 0 && muzzleCount < 10)
             {
-                for (int m = 0; m < muzzleCount; m = m + 1)
+                for (int m = 0; m < muzzleCount; m++)
                 {
                     // Chamber: one engine call per muzzle (safe)
                     if (weapon.IsChamberFull(m))
@@ -271,7 +271,7 @@ class LFV_ItemRecord
                         string intAmmoType = SafeGetAmmoType(className);
                         if (intAmmoType != "")
                         {
-                            for (int ic = 0; ic < internalCount; ic = ic + 1)
+                            for (int ic = 0; ic < internalCount; ic++)
                             {
                                 LFV_CartridgeData icd = new LFV_CartridgeData();
                                 icd.m_MuzzleIdx = m;
@@ -300,7 +300,7 @@ class LFV_ItemRecord
                 string magAmmoType = SafeGetAmmoType(className);
                 if (magAmmoType != "")
                 {
-                    for (int mi = 0; mi < magCount; mi = mi + 1)
+                    for (int mi = 0; mi < magCount; mi++)
                     {
                         LFV_CartridgeData mcd = new LFV_CartridgeData();
                         mcd.m_MuzzleIdx = 0;
@@ -330,7 +330,7 @@ class LFV_ItemRecord
             int nextDepth = depth + 1;
 
             int attCount = inv.AttachmentCount();
-            for (int a = 0; a < attCount; a = a + 1)
+            for (int a = 0; a < attCount; a++)
             {
                 EntityAI attEnt = inv.GetAttachmentFromIndex(a);
                 ItemBase attItem = ItemBase.Cast(attEnt);
@@ -348,7 +348,7 @@ class LFV_ItemRecord
             if (cargo)
             {
                 int cargoCount = cargo.GetItemCount();
-                for (int c = 0; c < cargoCount; c = c + 1)
+                for (int c = 0; c < cargoCount; c++)
                 {
                     EntityAI cargoEnt = cargo.GetItem(c);
                     ItemBase cargoItem = ItemBase.Cast(cargoEnt);
@@ -357,7 +357,7 @@ class LFV_ItemRecord
                         GameInventory cargoInv = cargoItem.GetInventory();
                         if (!cargoInv) continue;
                         InventoryLocation cargoLoc = new InventoryLocation();
-                        // LOC-FIX: same fix as BuildContainerFile -- fallback to default
+                        // same fix as BuildContainerFile -- fallback to default
                         // position if GetCurrentInventoryLocation fails. Prevents silent
                         // data loss for nested cargo items (items inside items).
                         int cRow = 0;

@@ -54,14 +54,14 @@ class LFV_Queue
     }
 
     // Complete the entire remaining work in one call (shutdown accelerate)
-    // M2 audit: safety counter prevents infinite loop if ProcessBatch has a bug
+    // safety counter prevents infinite loop if ProcessBatch has a bug
     void CompleteNow()
     {
         int safetyLimit = 10000;
         while (m_QueueState == LFV_QueueState.ACTIVE && safetyLimit > 0)
         {
             ProcessBatch();
-            safetyLimit = safetyLimit - 1;
+            safetyLimit--;
         }
         if (safetyLimit <= 0)
         {
@@ -123,7 +123,7 @@ class LFV_VirtualizeQueue : LFV_Queue
 
     override protected void OnStart()
     {
-        // M7 audit: shared logic via PrepareVirtualization
+        // shared logic via PrepareVirtualization
         LFV_Module module = LFV_Module.GetModule();
         if (!module)
         {
@@ -131,9 +131,14 @@ class LFV_VirtualizeQueue : LFV_Queue
             return;
         }
 
+        // Phase 5.5: signal we're mid-serialization so EEDelete refuses
+        // to purge our state + queue. Cleared in OnComplete / OnCancel.
+        m_ContainerState.m_IsVirtualizing = true;
+
         m_Data = module.PrepareVirtualization(m_Container, m_ContainerState, m_DoBackupRotation);
         if (!m_Data)
         {
+            m_ContainerState.m_IsVirtualizing = false;
             m_QueueState = LFV_QueueState.FAILED;
             return;
         }
@@ -155,7 +160,7 @@ class LFV_VirtualizeQueue : LFV_Queue
         if (!inv) return;
 
         // Attachments (forward order is fine for collection)
-        for (int a = 0; a < inv.AttachmentCount(); a = a + 1)
+        for (int a = 0; a < inv.AttachmentCount(); a++)
         {
             EntityAI att = inv.GetAttachmentFromIndex(a);
             if (att)
@@ -166,7 +171,7 @@ class LFV_VirtualizeQueue : LFV_Queue
         CargoBase cargo = inv.GetCargo();
         if (cargo)
         {
-            for (int c = 0; c < cargo.GetItemCount(); c = c + 1)
+            for (int c = 0; c < cargo.GetItemCount(); c++)
             {
                 EntityAI cargoItem = cargo.GetItem(c);
                 if (cargoItem)
@@ -180,7 +185,7 @@ class LFV_VirtualizeQueue : LFV_Queue
         if (m_QueueState != LFV_QueueState.ACTIVE)
             return;
 
-        // DEF-FIX: guard against container deleted between batches
+        // guard against container deleted between batches
         if (!m_Container)
         {
             m_QueueState = LFV_QueueState.COMPLETE;
@@ -200,7 +205,7 @@ class LFV_VirtualizeQueue : LFV_Queue
         int remaining = m_ItemsToDelete.Count() - m_CurrentIndex;
         int batchEnd = m_CurrentIndex + Math.Min(m_BatchSize, remaining);
 
-        for (int i = m_CurrentIndex; i < batchEnd; i = i + 1)
+        for (int i = m_CurrentIndex; i < batchEnd; i++)
         {
             EntityAI item = m_ItemsToDelete[i];
             if (item)
@@ -224,13 +229,14 @@ class LFV_VirtualizeQueue : LFV_Queue
     {
         LFV_StateMachine.Transition(m_ContainerState, LFV_State.VIRTUALIZED);
         m_ContainerState.m_HasItems = true;
+        m_ContainerState.m_IsVirtualizing = false;
 
         // Sync processing SyncVar (action locking)
         LFV_Barrel_Base lfvBarrel = LFV_Barrel_Base.Cast(m_Container);
         if (lfvBarrel)
             lfvBarrel.LFV_SetIsProcessing(false);
 
-        // MEM2 fix: clear m_ItemRef from data tree.
+        // clear m_ItemRef from data tree.
         // Uses shared static from LFV_FileStorage (also used by SaveAdminJson JSON-FIX).
         // After JSON-FIX, refs are already null here -- this is now a safe no-op.
         LFV_FileStorage.ClearItemRefs(m_Data.m_Items);
@@ -250,12 +256,13 @@ class LFV_VirtualizeQueue : LFV_Queue
         LFV_Log.Info(msg);
     }
 
-    // MEM2 fix: ClearItemRefs moved to LFV_FileStorage.ClearItemRefs (static, shared)
+    // ClearItemRefs moved to LFV_FileStorage.ClearItemRefs (static, shared)
 
     override protected void OnCancel()
     {
         LFV_StateMachine.Transition(m_ContainerState, LFV_State.VIRTUALIZED);
         m_ContainerState.m_HasItems = true;
+        m_ContainerState.m_IsVirtualizing = false;
         LFV_FileStorage.ClearItemRefs(m_Data.m_Items);
 
         LFV_Barrel_Base lfvBarrel = LFV_Barrel_Base.Cast(m_Container);
@@ -337,7 +344,7 @@ class LFV_RestoreQueue : LFV_Queue
         if (m_QueueState != LFV_QueueState.ACTIVE)
             return;
 
-        // DEF-FIX: guard against container deleted between batches
+        // guard against container deleted between batches
         if (!m_Container)
         {
             string lostMsg = "RestoreQueue: container lost mid-restore for ";
@@ -353,7 +360,7 @@ class LFV_RestoreQueue : LFV_Queue
         int remaining = m_Data.m_Items.Count() - m_CurrentIndex;
         int batchEnd = m_CurrentIndex + Math.Min(m_BatchSize, remaining);
 
-        for (int i = m_CurrentIndex; i < batchEnd; i = i + 1)
+        for (int i = m_CurrentIndex; i < batchEnd; i++)
         {
             LFV_ItemRecord record = m_Data.m_Items[i];
             RestoreItem(record, m_Container, 0);
@@ -396,17 +403,17 @@ class LFV_RestoreQueue : LFV_Queue
         // Apply all properties from explicit fields
         LFV_SpawnHelper.ApplyProperties(item, rec);
         rec.SetItemRef(item);
-        m_RestoredCount = m_RestoredCount + 1;
+        m_RestoredCount++;
 
         // Recurse attachments + cargo (depth guarded)
         if (depth < LFV_Limits.MAX_ITEM_DEPTH)
         {
             int nextDepth = depth + 1;
-            for (int a = 0; a < rec.m_Attachments.Count(); a = a + 1)
+            for (int a = 0; a < rec.m_Attachments.Count(); a++)
             {
                 RestoreItem(rec.m_Attachments[a], item, nextDepth);
             }
-            for (int c = 0; c < rec.m_Cargo.Count(); c = c + 1)
+            for (int c = 0; c < rec.m_Cargo.Count(); c++)
             {
                 RestoreItem(rec.m_Cargo[c], item, nextDepth);
             }
@@ -583,7 +590,7 @@ class LFV_DropQueue : LFV_Queue
     protected void FlattenTopLevel(array<ref LFV_ItemRecord> items)
     {
         if (!items) return;
-        for (int i = 0; i < items.Count(); i = i + 1)
+        for (int i = 0; i < items.Count(); i++)
         {
             LFV_ItemRecord rec = items[i];
             if (!rec) continue;
@@ -601,7 +608,7 @@ class LFV_DropQueue : LFV_Queue
         int remaining = m_FlatItems.Count() - m_CurrentIndex;
         int batchEnd = m_CurrentIndex + Math.Min(m_BatchSize, remaining);
 
-        for (int i = m_CurrentIndex; i < batchEnd; i = i + 1)
+        for (int i = m_CurrentIndex; i < batchEnd; i++)
         {
             LFV_ItemRecord rec = m_FlatItems[i];
             if (!LFV_Registry.ClassnameExists(rec.m_Classname))
@@ -621,7 +628,7 @@ class LFV_DropQueue : LFV_Queue
             if (item)
             {
                 LFV_SpawnHelper.ApplyProperties(item, rec);
-                m_DroppedCount = m_DroppedCount + 1;
+                m_DroppedCount++;
             }
         }
         m_CurrentIndex = batchEnd;
@@ -652,11 +659,18 @@ class LFV_DropQueue : LFV_Queue
         msg = msg + durationMs.ToString();
         msg = msg + "ms";
         LFV_Log.Info(msg);
+
+        // Phase 5.5: DropQueue is only created after container has been
+        // destroyed (EEKilled). OnEntityDestroyed (from EEDelete) deferred
+        // the purge to let us run. Finish the purge now that items landed.
+        LFV_Module module = LFV_Module.GetModule();
+        if (module && m_Container)
+            module.UntrackContainer(m_Container);
     }
 
     override protected void OnCancel()
     {
-        // C2 audit: revert to VIRTUALIZED so container doesn't get stuck
+        // revert to VIRTUALIZED so container doesn't get stuck
         // in RESTORING state with no recovery path. Keep .lfv for retry.
         LFV_StateMachine.Transition(m_ContainerState, LFV_State.VIRTUALIZED);
         m_ContainerState.m_HasItems = true;

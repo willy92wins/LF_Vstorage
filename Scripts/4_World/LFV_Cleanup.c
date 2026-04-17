@@ -68,7 +68,7 @@ class LFV_Cleanup
 
         while (keepScanning)
         {
-            scanned = scanned + 1;
+            scanned++;
             string fullPath = LFV_Paths.STORAGE_DIR;
             fullPath = fullPath + "/";
             fullPath = fullPath + fileName;
@@ -104,12 +104,12 @@ class LFV_Cleanup
                 string skipMsg = "Cleanup: SKIP (restoring/queued): ";
                 skipMsg = skipMsg + storageId;
                 LFV_Log.Info(skipMsg);
-                skipped = skipped + 1;
+                skipped++;
                 keepScanning = FindNextFile(handle, fileName, fileAttr);
                 continue;
             }
 
-            orphans = orphans + 1;
+            orphans++;
             orphanIds.Insert(storageId);
 
             string orphanMsg = "Cleanup: ORPHAN ";
@@ -132,11 +132,11 @@ class LFV_Cleanup
         // Delete orphans (if not dry run)
         if (!dryRun)
         {
-            for (int d = 0; d < orphanIds.Count(); d = d + 1)
+            for (int d = 0; d < orphanIds.Count(); d++)
             {
                 string delId = orphanIds[d];
                 LFV_FileStorage.DeleteContainerFiles(delId);
-                deleted = deleted + 1;
+                deleted++;
             }
         }
 
@@ -176,7 +176,7 @@ class LFV_Cleanup
     protected static bool IsRestoringOrQueued(LFV_Module module, string storageId)
     {
         int count = module.GetTrackedCount();
-        for (int i = 0; i < count; i = i + 1)
+        for (int i = 0; i < count; i++)
         {
             ItemBase container = module.GetTrackedContainerAt(i);
             if (!container) continue;

@@ -14,10 +14,24 @@
 class LFV_Settings
 {
     // --- Container registration ---
+    // m_NeverVirtualize is PRIMARY filter (blacklist-first).
+    // m_VirtualContainers is informational in normal mode; becomes
+    // authoritative whitelist only when m_StrictMode=true.
+    // m_ActionTriggeredContainers kept for legacy state flag population;
+    // no longer used for trigger routing after Phase 1 refactor.
     ref array<string> m_VirtualContainers;
     ref array<string> m_ActionTriggeredContainers;
     ref array<string> m_NeverVirtualize;
     ref array<string> m_ItemBlacklist;
+
+    // Strict/paranoid mode: when true, only m_VirtualContainers are
+    // ever considered virtual. Default false = blacklist-primary.
+    bool m_StrictMode;
+
+    // External virtualization mod detected (Expansion / VSM).
+    // When set by OnMissionStart detector, hooks early-return.
+    // Override via m_ForceEnableDespiteVS=true if admin knows risks.
+    bool m_ForceEnableDespiteVS;
 
     // --- Virtualization behavior ---
     bool m_VirtualizeDecayItems;
@@ -35,12 +49,6 @@ class LFV_Settings
     int m_AutoCloseShortDelay;
     int m_AutoCloseLongDelay;
     float m_AutoCloseRadius;
-
-    // --- Proximity mode ---
-    float m_ProximityRestoreRadius;
-    float m_ProximityVirtualizeRadius;
-    int m_ProximityCheckInterval;
-    int m_ProximityVirtualizeDelay;
 
     // --- Backups ---
     int m_BackupRotations;
@@ -122,6 +130,8 @@ class LFV_Settings
         string bl1 = "WrittenNote";
         m_ItemBlacklist.Insert(bl1);
 
+        m_StrictMode = false;
+        m_ForceEnableDespiteVS = false;
         m_VirtualizeDecayItems = false;
         m_BatchSize = 50;
         m_BatchInterval = 100;
@@ -131,11 +141,6 @@ class LFV_Settings
         m_AutoCloseShortDelay = 60;
         m_AutoCloseLongDelay = 300;
         m_AutoCloseRadius = 10.0;
-
-        m_ProximityRestoreRadius = 20.0;
-        m_ProximityVirtualizeRadius = 25.0;
-        m_ProximityCheckInterval = 3000;
-        m_ProximityVirtualizeDelay = 120;
 
         m_MaxItemsPerContainer = 0;
         m_CleanupDryRun = true;
@@ -185,15 +190,6 @@ class LFV_Settings
 
         if (!m_AdminUIDs)
             m_AdminUIDs = new array<string>();
-
-        // Validate critical invariants
-        if (m_ProximityRestoreRadius >= m_ProximityVirtualizeRadius)
-        {
-            string proxWarn = "ProximityRestoreRadius >= ProximityVirtualizeRadius -- fixing to avoid ping-pong";
-            LFV_Log.Warn(proxWarn);
-            m_ProximityVirtualizeRadius = m_ProximityRestoreRadius + 5.0;
-            Save();
-        }
 
         if (m_BatchSize < 1)
             m_BatchSize = 1;

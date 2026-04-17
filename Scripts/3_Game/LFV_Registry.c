@@ -16,14 +16,14 @@
 class LFV_Registry
 {
     // --- Core sets ---
-    protected static ref set<string> s_VirtualContainers;   // positive match
-    protected static ref set<string> s_ActionTriggered;     // action-triggered (non-barrel open/close)
-    protected static ref set<string> s_NeverVirtualize;     // hardcoded + settings
+    protected static ref set<string> s_VirtualContainers;   // informational (or whitelist when strict)
+    protected static ref set<string> s_ActionTriggered;     // action-triggered (legacy flag source)
+    protected static ref set<string> s_NeverVirtualize;     // PRIMARY filter (blacklist-first)
     protected static ref set<string> s_ItemBlacklist;       // items purged on virtualize
     protected static ref set<string> s_NonContainers;       // negative cache (speedup)
 
-    // --- Components (for extensibility -- Sprint 5) ---
-    protected static ref map<string, typename> s_Components;
+    // --- Filter mode ---
+    protected static bool s_StrictMode;
 
     // --- Config property cache ---
     protected static ref set<string> s_ConfigChecked;       // classnames already checked via ConfigGetInt
@@ -38,13 +38,13 @@ class LFV_Registry
         s_NeverVirtualize = new set<string>();
         s_ItemBlacklist = new set<string>();
         s_NonContainers = new set<string>();
-        s_Components = new map<string, typename>();
         s_ConfigChecked = new set<string>();
+        s_StrictMode = settings.m_StrictMode;
 
         // Load from settings (Via 1)
         if (settings.m_VirtualContainers)
         {
-            for (int i = 0; i < settings.m_VirtualContainers.Count(); i = i + 1)
+            for (int i = 0; i < settings.m_VirtualContainers.Count(); i++)
             {
                 string vc = settings.m_VirtualContainers[i];
                 if (vc != "" && s_VirtualContainers.Find(vc) == -1)
@@ -57,7 +57,7 @@ class LFV_Registry
         // ActionTriggeredContainers from settings
         if (settings.m_ActionTriggeredContainers)
         {
-            for (int at = 0; at < settings.m_ActionTriggeredContainers.Count(); at = at + 1)
+            for (int at = 0; at < settings.m_ActionTriggeredContainers.Count(); at++)
             {
                 string atc = settings.m_ActionTriggeredContainers[at];
                 if (atc != "" && s_ActionTriggered.Find(atc) == -1)
@@ -70,7 +70,7 @@ class LFV_Registry
         // NeverVirtualize from settings
         if (settings.m_NeverVirtualize)
         {
-            for (int j = 0; j < settings.m_NeverVirtualize.Count(); j = j + 1)
+            for (int j = 0; j < settings.m_NeverVirtualize.Count(); j++)
             {
                 string nv = settings.m_NeverVirtualize[j];
                 if (nv != "" && s_NeverVirtualize.Find(nv) == -1)
@@ -83,7 +83,7 @@ class LFV_Registry
         // ItemBlacklist from settings
         if (settings.m_ItemBlacklist)
         {
-            for (int k = 0; k < settings.m_ItemBlacklist.Count(); k = k + 1)
+            for (int k = 0; k < settings.m_ItemBlacklist.Count(); k++)
             {
                 string bl = settings.m_ItemBlacklist[k];
                 if (bl != "" && s_ItemBlacklist.Find(bl) == -1)
@@ -157,22 +157,31 @@ class LFV_Registry
         if (!s_VirtualContainers)
             return false;
 
-        // Fast negative cache
-        if (s_NonContainers.Find(classname) > -1)
+        // Blacklist primary -- always wins
+        if (s_NeverVirtualize && s_NeverVirtualize.Find(classname) > -1)
             return false;
 
-        // Positive set
-        if (s_VirtualContainers.Find(classname) > -1)
-            return true;
+        // Strict mode: only whitelisted classes are virtual
+        if (s_StrictMode)
+        {
+            if (s_NonContainers.Find(classname) > -1)
+                return false;
 
-        // Lazy config check (first encounter only)
-        TryRegisterFromConfig(classname);
-        if (s_VirtualContainers.Find(classname) > -1)
-            return true;
+            if (s_VirtualContainers.Find(classname) > -1)
+                return true;
 
-        // Cache negative result
-        s_NonContainers.Insert(classname);
-        return false;
+            TryRegisterFromConfig(classname);
+            if (s_VirtualContainers.Find(classname) > -1)
+                return true;
+
+            s_NonContainers.Insert(classname);
+            return false;
+        }
+
+        // Default mode: anything not blacklisted is virtual.
+        // Hookable containers reach this path implicitly (action hook
+        // / LFV_API is the de-facto whitelist).
+        return true;
     }
 
     static bool IsNeverVirtualize(string classname)
@@ -228,9 +237,27 @@ class LFV_Registry
         if (s_ClassnameMissing.Find(classname) > -1)
             return false;
 
-        string cfgPath = "CfgVehicles ";
-        cfgPath = cfgPath + classname;
-        if (GetGame().ConfigIsExisting(cfgPath))
+        // DayZ splits configs by category: weapons live in CfgWeapons,
+        // magazines/ammo in CfgMagazines, everything else in CfgVehicles.
+        // LocationCreateEntity resolves all three, so our existence check
+        // must too -- otherwise we wrongly discard entire subtrees (e.g.
+        // a holster's pistol) during restore.
+        string vehiclePath = "CfgVehicles " + classname;
+        if (GetGame().ConfigIsExisting(vehiclePath))
+        {
+            s_ClassnameCache.Insert(classname);
+            return true;
+        }
+
+        string weaponPath = "CfgWeapons " + classname;
+        if (GetGame().ConfigIsExisting(weaponPath))
+        {
+            s_ClassnameCache.Insert(classname);
+            return true;
+        }
+
+        string magazinePath = "CfgMagazines " + classname;
+        if (GetGame().ConfigIsExisting(magazinePath))
         {
             s_ClassnameCache.Insert(classname);
             return true;
@@ -238,23 +265,5 @@ class LFV_Registry
 
         s_ClassnameMissing.Insert(classname);
         return false;
-    }
-
-    // -----------------------------------------------------------
-    // Component registration (Sprint 5 -- extensibility)
-    // -----------------------------------------------------------
-    static void RegisterComponent(string name, typename componentType)
-    {
-        if (!s_Components)
-            return;
-        s_Components.Set(name, componentType);
-        string compMsg = "Component registered: ";
-        compMsg = compMsg + name;
-        LFV_Log.Info(compMsg);
-    }
-
-    static map<string, typename> GetComponents()
-    {
-        return s_Components;
     }
 }
