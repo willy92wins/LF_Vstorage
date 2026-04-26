@@ -11,8 +11,8 @@
 // Sequence: super FIRST (Open), then LFV restore.
 // This ensures CanReceiveItemIntoCargo()=true during spawn.
 //
-// Phase 2: gated behind #ifdef RaG_Core so servers without RaG
-// loaded compile this as empty (no hard dependency).
+// Phase 2: gated behind the RaG_Core addon define so servers
+// without RaG loaded compile this as empty (no hard dependency).
 // =========================================================
 
 #ifdef RaG_Core

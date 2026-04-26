@@ -30,7 +30,7 @@ class CfgMods
         credits = "Guillermo / LF_PowerGrid";
         author = "Guillermo";
         authorID = "";
-        version = "1.1.0";
+        version = "1.2.0";
         extra = 0;
         type = "mod";
 

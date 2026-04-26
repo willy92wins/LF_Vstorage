@@ -329,18 +329,31 @@ class LFV_ItemRecord
         {
             int nextDepth = depth + 1;
 
+            // Capture attachments with the ACTUAL slot ID of each attached
+            // entity (via GetCurrentInventoryLocation.GetSlot).
+            //
+            // Do NOT use inv.GetAttachmentSlotId(attachmentIndex): that API
+            // expects a slot INDEX (0..GetAttachmentSlotsCount()-1) and
+            // returns the slot ID of that slot position, unrelated to
+            // GetAttachmentFromIndex. Mixing the two causes a weapon's mag
+            // (attachment #0) to be saved with the slot ID of the optics
+            // slot on that weapon -- restore then tries to attach the mag
+            // to the optics slot, fails, and the fallback chain drops it
+            // on the ground. Same pattern for any other attachment.
             int attCount = inv.AttachmentCount();
             for (int a = 0; a < attCount; a++)
             {
                 EntityAI attEnt = inv.GetAttachmentFromIndex(a);
                 ItemBase attItem = ItemBase.Cast(attEnt);
-                if (attItem)
-                {
-                    int attSlot = inv.GetAttachmentSlotId(a);
-                    LFV_ItemRecord attRec = LFV_ItemRecord.FromItem(attItem, LFV_InvType.ATTACHMENT, 0, 0, 0, attSlot, false, nextDepth);
-                    if (attRec)
-                        rec.m_Attachments.Insert(attRec);
-                }
+                if (!attItem) continue;
+                GameInventory attInv = attItem.GetInventory();
+                if (!attInv) continue;
+                InventoryLocation attLoc = new InventoryLocation();
+                if (!attInv.GetCurrentInventoryLocation(attLoc)) continue;
+                int attSlot = attLoc.GetSlot();
+                LFV_ItemRecord attRec = LFV_ItemRecord.FromItem(attItem, LFV_InvType.ATTACHMENT, 0, 0, 0, attSlot, false, nextDepth);
+                if (attRec)
+                    rec.m_Attachments.Insert(attRec);
             }
 
             // Cargo (recursive)

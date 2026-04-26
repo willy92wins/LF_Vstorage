@@ -14,8 +14,8 @@
 //   CLOSE: virtualize BEFORE super (items captured while open)
 //   OPEN:  restore AFTER super (CanReceiveItemIntoCargo needs IsOpen)
 //
-// Phase 2: gated behind #ifdef A6_Base_Storage so servers without
-// A6 loaded compile this file as empty (no hard dependency).
+// Phase 2: gated behind the A6_Base_Storage addon define so servers
+// without A6 loaded compile this file as empty (no hard dependency).
 // =========================================================
 
 #ifdef A6_Base_Storage

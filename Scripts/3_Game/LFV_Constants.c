@@ -13,14 +13,21 @@
 class LFV_Version
 {
     static const int FORMAT = 3;         // .lfv binary format version (v3: removed StoreCtx, added Agents/Combination/Cleanness)
-    static const int PERSIST = 1;        // OnStoreSave/OnStoreLoad version for LFV_Barrel_Base
-    static const string MOD_VERSION = "1.1.0";
+    static const int PERSIST = 2;        // OnStoreSave/OnStoreLoad version. v2: StorageId now persisted on ItemBase/TentBase (not just LFV_Barrel_Base)
+    static const int PERSIST_LEGACY = 1; // v1: only LFV_Barrel_Base persisted StorageId; vanilla containers used IdMap JSON
+    static const string MOD_VERSION = "1.3.4";
 }
 
 // Recursion safety
 class LFV_Limits
 {
     static const int MAX_ITEM_DEPTH = 5; // Max nesting depth for item tree recursion
+    // After this many consecutive RestoreQueue attempts that spawn zero items
+    // (typically: every classname missing -- mod removed or renamed), we give
+    // up on the .lfv and transition the container back to IDLE. Without this,
+    // each open retries forever and spams logs on a container nobody can ever
+    // empty.
+    static const int MAX_RESTORE_FAILURES = 3;
 }
 
 class LFV_Magic
@@ -115,11 +122,25 @@ class LFV_RPC
 }
 
 // File paths
+//
+// Split between two roots:
+//   $storage:  --> storage_N/ of the current mission (wipes with the map)
+//   $profile:  --> server profile (persists across map wipes)
+//
+// Data (.lfv files, id_map.json, admin sidecars) lives under $storage: so
+// that admins wiping the map directory also drop stale virtual-storage
+// residue automatically -- matches the Expansion PersonalStorage pattern
+// ($storage:expansion\\personalstoragenew\\).
+//
+// Config (settings.json) stays under $profile: so admin changes survive
+// a map wipe. An admin that wants to wipe settings too has to target that
+// file explicitly, which is the intended behavior.
 class LFV_Paths
 {
-    static const string STORAGE_DIR = "$profile:LFVStorage";
+    static const string STORAGE_DIR   = "$storage:LFVStorage";              // data, wipes with storage_N
+    static const string SETTINGS_DIR  = "$profile:LFVStorage";              // config, persists
     static const string SETTINGS_FILE = "$profile:LFVStorage/settings.json";
-    static const string IDMAP_FILE = "$profile:LFVStorage/id_map.json";
+    static const string IDMAP_FILE    = "$storage:LFVStorage/id_map.json";
     static const string FILE_EXT = ".lfv";
     static const string JSON_EXT = ".json";
     static const string TMP_EXT = ".tmp";

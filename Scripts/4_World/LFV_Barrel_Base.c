@@ -20,7 +20,7 @@ class LFV_Barrel_Base : Barrel_ColorBase
     protected int    m_LFV_ItemCount;
 
     // --- Server-only data (not synced via SyncVar) ---
-    protected string m_LFV_StorageId;
+    // m_LFV_StorageId inherited from modded class ItemBase (PERSIST v2)
     protected string m_LFV_Manifest;
     protected int    m_LFV_PersistVersion;
     protected string m_LFV_OwnerUID;     // reserved for v2
@@ -172,16 +172,11 @@ class LFV_Barrel_Base : Barrel_ColorBase
 
     // -----------------------------------------------------------
     // Accessors (for module)
+    // LFV_GetStorageId / LFV_SetStorageId inherited from modded ItemBase.
     // -----------------------------------------------------------
-    string LFV_GetStorageId() { return m_LFV_StorageId; }
     bool LFV_GetHasItems() { return m_LFV_HasItems; }
     int LFV_GetItemCount() { return m_LFV_ItemCount; }
     string LFV_GetManifest() { return m_LFV_Manifest; }
-
-    void LFV_SetStorageId(string sid)
-    {
-        m_LFV_StorageId = sid;
-    }
 
     void LFV_SetHasItems(bool val)
     {

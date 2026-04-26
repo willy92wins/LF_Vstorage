@@ -185,6 +185,13 @@ class LFV_ContainerState
     // Blocks OnEntityDestroyed from purging state mid-serialization, which
     // would leave a corrupt blob + lose the in-flight DropQueue.
     bool    m_IsVirtualizing;
+    // Consecutive zero-items restore attempts. Bumped by RestoreQueue.OnComplete
+    // when NONE of the .lfv records could be spawned (typically: mod removed,
+    // classnames renamed, config regression). Reset on a successful restore.
+    // When it reaches LFV_Limits.MAX_RESTORE_FAILURES, the container gives up
+    // and the .lfv is deleted to break an otherwise-infinite retry loop on
+    // every open.
+    int     m_RestoreFailures;
     ref map<string, int> m_PlayerActionTimestamps;  // rate limiting per-player
 
     void LFV_ContainerState()
@@ -198,6 +205,7 @@ class LFV_ContainerState
         m_IsLFVBarrel = false;
         m_IsActionTriggered = false;
         m_IsVirtualizing = false;
+        m_RestoreFailures = 0;
         m_PlayerActionTimestamps = new map<string, int>();
     }
 }

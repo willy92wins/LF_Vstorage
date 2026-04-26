@@ -75,6 +75,10 @@ class LFV_Settings
     // --- Periodic scan ---
     int m_PeriodicScanInterval;
 
+    // --- Lifecycle delays on boot (server-only; not synced to clients) ---
+    int m_ScanInitialDelayMs;
+    int m_CleanupInitialDelayMs;
+
     // --- Logging ---
     string m_LogLevel;
 
@@ -147,6 +151,8 @@ class LFV_Settings
         m_MaxPendingQueues = 50;
         m_ShutdownBudgetMs = 45000;
         m_PeriodicScanInterval = 1800;
+        m_ScanInitialDelayMs = 10000;
+        m_CleanupInitialDelayMs = 120000;
         m_BackupRotations = 2;
         m_ManifestEnabled = true;
         m_ManifestMaxItems = 8;
@@ -158,24 +164,14 @@ class LFV_Settings
     }
 
     // -----------------------------------------------------------
-    // Load from JSON -- server only
+    // Guarantee every array field is non-null after a load.
+    // ReadFromString merges present keys into the existing instance
+    // but explicit "key": null in the JSON can nullify an array that
+    // the constructor had initialized. Re-init defensively before any
+    // code iterates or Save() re-serializes the object.
     // -----------------------------------------------------------
-    bool Load()
+    protected void EnsureArraysNotNull()
     {
-        if (!FileExist(LFV_Paths.SETTINGS_FILE))
-        {
-            string noFileMsg = "No settings file found, creating default";
-            LFV_Log.Info(noFileMsg);
-            Save();
-            return true;
-        }
-
-        string errorMsg;
-        JsonFileLoader<LFV_Settings>.JsonLoadFile(LFV_Paths.SETTINGS_FILE, this);
-        // JsonFileLoader doesn't return error in vanilla -- if file corrupt, fields stay default
-
-        // Ensure arrays are initialized FIRST (JsonFileLoader may return null on empty)
-        // Must be before validation -- Save() below would crash serializing null arrays
         if (!m_VirtualContainers)
             m_VirtualContainers = new array<string>();
 
@@ -190,7 +186,15 @@ class LFV_Settings
 
         if (!m_AdminUIDs)
             m_AdminUIDs = new array<string>();
+    }
 
+    // -----------------------------------------------------------
+    // Clamp numeric fields into the operational range LFV assumes.
+    // Out-of-range values from a hand-edited settings.json would
+    // otherwise lock timers, starve queues, or underflow delays.
+    // -----------------------------------------------------------
+    protected void ClampNumericBounds()
+    {
         if (m_BatchSize < 1)
             m_BatchSize = 1;
 
@@ -221,6 +225,82 @@ class LFV_Settings
         if (m_PeriodicScanInterval < 300)
             m_PeriodicScanInterval = 300;
 
+        if (m_ScanInitialDelayMs < 1000)
+            m_ScanInitialDelayMs = 1000;
+
+        if (m_CleanupInitialDelayMs < 1000)
+            m_CleanupInitialDelayMs = 1000;
+    }
+
+    // -----------------------------------------------------------
+    // Load from JSON -- server only.
+    //
+    // Custom loader (OpenFile + ReadFile + JsonSerializer) replaces
+    // the vanilla JsonFileLoader<T> path because JsonFileLoader
+    // silently accepts malformed JSON and leaves the caller with
+    // defaults, no error, no log line. That made mis-edited
+    // settings.json files undiagnosable in production -- the server
+    // would boot with silent defaults and admins would not notice
+    // until a specific setting (logLevel, AdminUIDs, etc.) was
+    // observed to be wrong hours later.
+    //
+    // JsonSerializer.ReadFromString returns the parse error from
+    // the underlying Enforce parser, so a bad edit now surfaces
+    // immediately with an actionable log line.
+    //
+    // On any failure (missing, unreadable, empty, malformed) we
+    // keep the defaults that SetDefaults() established in the
+    // constructor and return false. Callers currently ignore the
+    // return value; existing behavior is preserved for them.
+    // -----------------------------------------------------------
+    bool Load()
+    {
+        if (!FileExist(LFV_Paths.SETTINGS_FILE))
+        {
+            string noFileMsg = "No settings file found, creating default";
+            LFV_Log.Info(noFileMsg);
+            Save();
+            return true;
+        }
+
+        FileHandle file = OpenFile(LFV_Paths.SETTINGS_FILE, FileMode.READ);
+        if (!file)
+        {
+            string openErr = "Cannot open settings.json for read -- keeping defaults: ";
+            openErr = openErr + LFV_Paths.SETTINGS_FILE;
+            LFV_Log.Error(openErr);
+            return false;
+        }
+
+        // 1 MB ceiling. LFV settings.json is typically <8 KB; the large
+        // cap gives room for sizable m_VirtualContainers / m_AdminUIDs
+        // lists without needing a chunked reader. If we ever hit this,
+        // the JSON parser would have failed far earlier from other
+        // issues (admin list of 100k+ UIDs is not realistic).
+        string content;
+        ReadFile(file, content, 1048576);
+        CloseFile(file);
+
+        if (content == "")
+        {
+            string emptyMsg = "settings.json is empty -- keeping defaults";
+            LFV_Log.Warn(emptyMsg);
+            return false;
+        }
+
+        JsonSerializer serializer = new JsonSerializer();
+        string parseErr;
+        if (!serializer.ReadFromString(this, content, parseErr))
+        {
+            string detailedErr = "settings.json parse error -- keeping defaults: ";
+            detailedErr = detailedErr + parseErr;
+            LFV_Log.Error(detailedErr);
+            return false;
+        }
+
+        EnsureArraysNotNull();
+        ClampNumericBounds();
+
         string loadMsg = "Settings loaded -- ";
         loadMsg = loadMsg + m_VirtualContainers.Count().ToString();
         loadMsg = loadMsg + " virtual containers configured";
@@ -229,11 +309,27 @@ class LFV_Settings
     }
 
     // -----------------------------------------------------------
-    // Save to JSON -- server only
+    // Save to JSON -- server only. Pretty-printed so admins can
+    // hand-edit. WriteToString is infallible in Enforce Script;
+    // the only failure surface is the file handle open.
     // -----------------------------------------------------------
     void Save()
     {
-        JsonFileLoader<LFV_Settings>.JsonSaveFile(LFV_Paths.SETTINGS_FILE, this);
+        JsonSerializer serializer = new JsonSerializer();
+        string json;
+        serializer.WriteToString(this, true, json);
+
+        FileHandle file = OpenFile(LFV_Paths.SETTINGS_FILE, FileMode.WRITE);
+        if (!file)
+        {
+            string openErr = "Cannot open settings.json for write: ";
+            openErr = openErr + LFV_Paths.SETTINGS_FILE;
+            LFV_Log.Error(openErr);
+            return;
+        }
+
+        FPrint(file, json);
+        CloseFile(file);
     }
 
     // RPC: serialized automatically via Param1<LFV_Settings> in

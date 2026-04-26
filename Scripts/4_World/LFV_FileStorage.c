@@ -15,6 +15,40 @@
 class LFV_FileStorage
 {
     // -----------------------------------------------------------
+    // EnsureStorageDir -- idempotent dir-exists check.
+    //
+    // $storage: aliases resolve to <mission>/storage_N/. The N folder
+    // is created by the engine, not us, and may not exist when LFV's
+    // OnMissionStart fires (engine populates storage during/after the
+    // first mission load). Calling MakeDirectory before storage_N
+    // exists is a silent no-op and any subsequent FileSerializer.Open
+    // returns "Cannot open for write".
+    //
+    // Fix: re-check + retry MakeDirectory at every write path. Cheap
+    // (one FileExist syscall on the happy path) and defensive against
+    // anything else that might delete the dir mid-session.
+    //
+    // Returns true if the dir exists after the call. Caller should
+    // log + abort the write if false.
+    // -----------------------------------------------------------
+    static bool EnsureStorageDir()
+    {
+        if (FileExist(LFV_Paths.STORAGE_DIR))
+            return true;
+
+        MakeDirectory(LFV_Paths.STORAGE_DIR);
+
+        if (FileExist(LFV_Paths.STORAGE_DIR))
+            return true;
+
+        string err = "EnsureStorageDir: cannot create ";
+        err = err + LFV_Paths.STORAGE_DIR;
+        err = err + " -- storage_N may not exist yet";
+        LFV_Log.Error(err);
+        return false;
+    }
+
+    // -----------------------------------------------------------
     // WRITE -- Item array (recursive)
     // -----------------------------------------------------------
     static void WriteItemArray(FileSerializer file, array<ref LFV_ItemRecord> items, int depth)
@@ -342,6 +376,8 @@ class LFV_FileStorage
     // -----------------------------------------------------------
     static bool AtomicSave(string storageId, LFV_ContainerFile data)
     {
+        if (!EnsureStorageDir()) return false;
+
         string basePath = LFV_Paths.GetContainerPath(storageId);
         string tmpPath = basePath + LFV_Paths.TMP_EXT;
 
@@ -443,8 +479,20 @@ class LFV_FileStorage
                 string infoTmp = "Recovered from .tmp (crash during save): ";
                 infoTmp = infoTmp + storageId;
                 LFV_Log.Warn(infoTmp);
-                // Promote .tmp to primary so future saves work normally
-                CopyFile(tmpPath, basePath);
+                // Promote .tmp to primary so future saves work normally.
+                // If CopyFile fails (disk full, perms), keep the .tmp so the
+                // next boot can still recover from it -- deleting it would
+                // leave the container with zero disk-side data after a
+                // clean CopyFile failure (which LoadContainerFromFile above
+                // already proved to be valid data we'd otherwise throw away).
+                if (!CopyFile(tmpPath, basePath))
+                {
+                    string copyFailMsg = "Failed to promote .tmp to .lfv (";
+                    copyFailMsg = copyFailMsg + tmpPath;
+                    copyFailMsg = copyFailMsg + ") -- keeping .tmp for next boot recovery";
+                    LFV_Log.Error(copyFailMsg);
+                    return true;
+                }
                 DeleteFile(tmpPath);
                 return true;
             }
@@ -465,10 +513,15 @@ class LFV_FileStorage
     }
 
     // -----------------------------------------------------------
-    // BACKUP ROTATION
+    // BACKUP ROTATION -- returns false on CopyFile failure so callers
+    // can abort the save and preserve the existing .lfv. Silent failure
+    // here (disk full, perms) used to let AtomicSave clobber the only
+    // good copy with a possibly-bad new one.
     // -----------------------------------------------------------
-    static void RotateBackups(string storageId)
+    static bool RotateBackups(string storageId)
     {
+        if (!EnsureStorageDir()) return false;
+
         string basePath = LFV_Paths.GetContainerPath(storageId);
         string bak1 = basePath + LFV_Paths.BAK1_EXT;
         string bak2 = basePath + LFV_Paths.BAK2_EXT;
@@ -480,7 +533,13 @@ class LFV_FileStorage
         // bak1 -> bak2
         if (FileExist(bak1))
         {
-            CopyFile(bak1, bak2);
+            if (!CopyFile(bak1, bak2))
+            {
+                string err1 = "RotateBackups: bak1->bak2 failed for ";
+                err1 = err1 + storageId;
+                LFV_Log.Error(err1);
+                return false;
+            }
             // must delete bak1 after copying to bak2,
             // because DayZ CopyFile cannot overwrite existing files.
             // Without this, the next CopyFile(basePath, bak1) silently
@@ -490,7 +549,17 @@ class LFV_FileStorage
 
         // current -> bak1
         if (FileExist(basePath))
-            CopyFile(basePath, bak1);
+        {
+            if (!CopyFile(basePath, bak1))
+            {
+                string err2 = "RotateBackups: base->bak1 failed for ";
+                err2 = err2 + storageId;
+                LFV_Log.Error(err2);
+                return false;
+            }
+        }
+
+        return true;
     }
 
     // -----------------------------------------------------------
@@ -638,6 +707,8 @@ class LFV_FileStorage
     // -----------------------------------------------------------
     static void WriteRestoreMarker(string storageId)
     {
+        if (!EnsureStorageDir()) return;
+
         string path = LFV_Paths.GetContainerPath(storageId) + ".restoring";
         FileHandle file = OpenFile(path, FileMode.WRITE);
         if (file)

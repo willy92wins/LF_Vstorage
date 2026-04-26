@@ -15,7 +15,12 @@ modded class PlayerBase
         {
             case LFV_RPC.SYNC_SETTINGS:
             {
-                Param1<LFV_Settings> data;
+                // Param1 must be allocated BEFORE ctx.Read -- Enforce Script's
+                // ParamsReadContext deserializes into the existing instance
+                // rather than allocating one. A null reference either crashes
+                // the engine or silently drops the payload, depending on build.
+                // Same pattern as LFV_ModdedItemBase.OnRPC / LFV_ModdedBarrelColorBase.OnRPC.
+                Param1<LFV_Settings> data = new Param1<LFV_Settings>(null);
                 if (!ctx.Read(data))
                     return;
 
@@ -28,7 +33,7 @@ modded class PlayerBase
             case LFV_RPC.ADMIN_COMMAND:
             {
                 #ifdef SERVER
-                Param1<string> cmdData;
+                Param1<string> cmdData = new Param1<string>("");
                 if (!ctx.Read(cmdData))
                     return;
 

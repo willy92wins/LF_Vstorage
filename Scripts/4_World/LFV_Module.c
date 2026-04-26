@@ -41,9 +41,8 @@ class LFV_Module : CF_ModuleWorld
     protected ref array<Man> m_AutoClosePlayers;
     protected ref array<ItemBase> m_AutoCloseToClose;
 
-    // --- IdMap periodic save ---
-    protected ref Timer m_IdMapSaveTimer;
-    protected int m_IdMapDirtyCount;
+    // --- Sweep timer (stale container cleanup; formerly also IdMap save) ---
+    protected ref Timer m_SweepTimer;
 
     // --- Periodic scan ---
     protected ref Timer m_PeriodicScanTimer;
@@ -66,7 +65,6 @@ class LFV_Module : CF_ModuleWorld
         m_IsShuttingDown = false;
         m_AutoClosePlayers = new array<Man>();
         m_AutoCloseToClose = new array<ItemBase>();
-        m_IdMapDirtyCount = 0;
         m_StartupComplete = false;
 
         // Init Registry with defaults immediately so ActionCondition
@@ -137,7 +135,6 @@ class LFV_Module : CF_ModuleWorld
     LFV_ContainerFile PrepareVirtualization(ItemBase container, LFV_ContainerState state, bool doBackupRotation) { return null; }
     void PurgeBlacklisted(LFV_ContainerFile data) {}
     void SaveAdminJson(LFV_ContainerFile data) {}
-    void RegisterInIdMap(ItemBase container, string storageId) {}
     void OnOpenContainer(ItemBase container, PlayerBase player) {}
     void OnCloseContainer(ItemBase container, PlayerBase player) {}
     void OnCloseContainer(ItemBase container) {}
@@ -146,5 +143,6 @@ class LFV_Module : CF_ModuleWorld
     void RequestVirtualize(ItemBase container) {}
     void HandleAdminCommandFromRPC(string command, PlayerIdentity sender) {}
     void UntrackContainer(ItemBase container) {}
+    void UntrackContainerBySid(string sid) {}
     void OnEntityDestroyed(EntityAI entity) {}
 }

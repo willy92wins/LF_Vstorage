@@ -153,21 +153,16 @@ class LFV_VirtualizeQueue : LFV_Queue
         LFV_Log.Info(msg);
     }
 
-    // Collect all items from container into flat deletion list
+    // Collect items from container into flat deletion list.
+    // Only cargo is collected -- top-level attachments (codelock, lock,
+    // camonet) are fixtures of the container and must NOT be deleted.
+    // Mirrors BuildContainerFile / DeleteAllItems: what we capture we
+    // delete, what we don't capture we leave alone.
     protected void CollectAllItems(ItemBase container)
     {
         GameInventory inv = container.GetInventory();
         if (!inv) return;
 
-        // Attachments (forward order is fine for collection)
-        for (int a = 0; a < inv.AttachmentCount(); a++)
-        {
-            EntityAI att = inv.GetAttachmentFromIndex(a);
-            if (att)
-                m_ItemsToDelete.Insert(att);
-        }
-
-        // Cargo
         CargoBase cargo = inv.GetCargo();
         if (cargo)
         {
@@ -254,6 +249,17 @@ class LFV_VirtualizeQueue : LFV_Queue
         msg = msg + durationMs.ToString();
         msg = msg + "ms";
         LFV_Log.Info(msg);
+
+        // If entity died mid-queue, OnEntityDestroyed deferred the purge
+        // (m_IsVirtualizing=true was the guard). Finish it now so the
+        // state map doesn't hold a dangling-key zombie until the next
+        // sweep tick.
+        if (!m_Container)
+        {
+            LFV_Module module = LFV_Module.GetModule();
+            if (module)
+                module.UntrackContainerBySid(m_ContainerState.m_StorageId);
+        }
     }
 
     // ClearItemRefs moved to LFV_FileStorage.ClearItemRefs (static, shared)
@@ -268,6 +274,14 @@ class LFV_VirtualizeQueue : LFV_Queue
         LFV_Barrel_Base lfvBarrel = LFV_Barrel_Base.Cast(m_Container);
         if (lfvBarrel)
             lfvBarrel.LFV_SetIsProcessing(false);
+
+        // Same deferred-purge rescue as OnComplete
+        if (!m_Container)
+        {
+            LFV_Module module = LFV_Module.GetModule();
+            if (module)
+                module.UntrackContainerBySid(m_ContainerState.m_StorageId);
+        }
     }
 }
 
@@ -388,6 +402,43 @@ class LFV_RestoreQueue : LFV_Queue
             return;
         }
 
+        // Legacy migration: top-level attachment records in .lfv can only
+        // come from pre-fix versions that virtualized the container's own
+        // fixtures (codelock, lock, camonet). New code never writes these.
+        // Their stored slot IDs are also wrong (captured via the old
+        // GetAttachmentSlotId(attachmentIndex) API misuse), so we must
+        // ignore the slot ID and re-attach via FindFirstFreeLocationForNewEntity
+        // which picks the right slot by classname. If the fixture already
+        // exists on the container (user re-attached manually, or engine
+        // persistence kept it), skip to avoid duplicates.
+        if (depth == 0 && rec.m_InvType == LFV_InvType.ATTACHMENT)
+        {
+            if (LFV_SpawnHelper.HasAttachmentOfType(parent, rec.m_Classname))
+            {
+                string dupMsg = "Legacy top-level attachment already present, skipping: ";
+                dupMsg = dupMsg + rec.m_Classname;
+                LFV_Log.Info(dupMsg);
+                LFV_Stats.s_SkippedItems = LFV_Stats.s_SkippedItems + 1;
+                return;
+            }
+            ItemBase legacyItem = LFV_SpawnHelper.SpawnLegacyTopLevelAttachment(parent, rec.m_Classname);
+            if (!legacyItem)
+            {
+                string legacyFail = "Legacy top-level attachment could not be placed: ";
+                legacyFail = legacyFail + rec.m_Classname;
+                LFV_Log.Warn(legacyFail);
+                LFV_Stats.s_SkippedItems = LFV_Stats.s_SkippedItems + 1;
+                return;
+            }
+            LFV_SpawnHelper.ApplyProperties(legacyItem, rec);
+            rec.SetItemRef(legacyItem);
+            m_RestoredCount++;
+            // Don't recurse children: legacy fixtures (codelock, etc.) have
+            // no nested cargo in practice, and the slot IDs of any nested
+            // records are also tainted by the same bug. Safe to stop here.
+            return;
+        }
+
         // Spawn
         ItemBase item = LFV_SpawnHelper.SpawnWithFallback(parent, rec);
 
@@ -432,15 +483,56 @@ class LFV_RestoreQueue : LFV_Queue
 
         // Total failure: ZERO items restored -- revert to VIRTUALIZED for retry.
         // No items in world = no duplication risk, safe to keep .lfv.
+        //
+        // Retry cap: if this keeps happening (missing classnames after a mod
+        // removal, config regression, etc.), the container is stuck opening
+        // to emptiness forever. After MAX_RESTORE_FAILURES consecutive zero-
+        // restores we give up: delete .lfv, go IDLE, log CRITICAL so the
+        // admin can investigate. Items recorded in the .lfv are irrecoverable
+        // once we get here; keeping the file just wastes disk and log volume.
         if (m_RestoredCount == 0)
         {
+            m_ContainerState.m_RestoreFailures = m_ContainerState.m_RestoreFailures + 1;
+
+            if (m_ContainerState.m_RestoreFailures >= LFV_Limits.MAX_RESTORE_FAILURES)
+            {
+                LFV_StateMachine.Transition(m_ContainerState, LFV_State.RESTORED);
+                LFV_StateMachine.Transition(m_ContainerState, LFV_State.IDLE);
+                m_ContainerState.m_HasItems = false;
+                m_ContainerState.m_RestoreFailures = 0;
+
+                LFV_FileStorage.DeleteContainerFiles(m_ContainerState.m_StorageId);
+
+                if (lfvBarrel)
+                {
+                    lfvBarrel.LFV_SetItemCount(0);
+                    lfvBarrel.LFV_SetHasItems(false);
+                    lfvBarrel.LFV_SetIsProcessing(false);
+                    string emptyManifestGiveUp = "";
+                    lfvBarrel.LFV_SetManifest(emptyManifestGiveUp);
+                }
+
+                string giveUpMsg = "RestoreQueue: giving up after ";
+                giveUpMsg = giveUpMsg + LFV_Limits.MAX_RESTORE_FAILURES.ToString();
+                giveUpMsg = giveUpMsg + " zero-restore attempts, .lfv deleted: ";
+                giveUpMsg = giveUpMsg + m_ContainerState.m_StorageId;
+                LFV_Log.Critical(giveUpMsg);
+
+                LFV_Stats.RecordRestore(durationMs);
+                return;
+            }
+
             LFV_StateMachine.Transition(m_ContainerState, LFV_State.VIRTUALIZED);
             m_ContainerState.m_HasItems = true;
 
             if (lfvBarrel)
                 lfvBarrel.LFV_SetIsProcessing(false);
 
-            string zeroMsg = "RestoreQueue: 0 items restored -- keeping .lfv for retry: ";
+            string zeroMsg = "RestoreQueue: 0 items restored (attempt ";
+            zeroMsg = zeroMsg + m_ContainerState.m_RestoreFailures.ToString();
+            zeroMsg = zeroMsg + "/";
+            zeroMsg = zeroMsg + LFV_Limits.MAX_RESTORE_FAILURES.ToString();
+            zeroMsg = zeroMsg + ") -- keeping .lfv for retry: ";
             zeroMsg = zeroMsg + m_ContainerState.m_StorageId;
             LFV_Log.Warn(zeroMsg);
 
@@ -452,6 +544,7 @@ class LFV_RestoreQueue : LFV_Queue
         LFV_StateMachine.Transition(m_ContainerState, LFV_State.RESTORED);
         LFV_StateMachine.Transition(m_ContainerState, LFV_State.IDLE);
         m_ContainerState.m_HasItems = false;
+        m_ContainerState.m_RestoreFailures = 0;
 
         // Anti-duplication: Delete .lfv IMMEDIATELY after successful restore.
         // Items are persistent -- they survive engine restarts via engine

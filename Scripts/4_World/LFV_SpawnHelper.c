@@ -193,6 +193,46 @@ class LFV_SpawnHelper
     }
 
     // -----------------------------------------------------------
+    // Legacy-migration helpers (pre-fix .lfv had top-level attachment
+    // records with corrupt slot IDs). Used only when the restore path
+    // detects depth=0 ATTACHMENT records. New code never emits those.
+    // -----------------------------------------------------------
+    static bool HasAttachmentOfType(ItemBase container, string classname)
+    {
+        if (!container) return false;
+        GameInventory inv = container.GetInventory();
+        if (!inv) return false;
+        int count = inv.AttachmentCount();
+        for (int i = 0; i < count; i++)
+        {
+            EntityAI att = inv.GetAttachmentFromIndex(i);
+            if (att && att.GetType() == classname)
+                return true;
+        }
+        return false;
+    }
+
+    static ItemBase SpawnLegacyTopLevelAttachment(ItemBase container, string classname)
+    {
+        if (!container) return null;
+        GameInventory inv = container.GetInventory();
+        if (!inv) return null;
+
+        // Resolve the correct slot by classname, bypassing the corrupt
+        // slot ID that pre-fix .lfv records carry. FindFirstFreeLocationForNewEntity
+        // scoped to ATTACHMENT finds the attachment slot whose type
+        // accepts this classname.
+        InventoryLocation loc = new InventoryLocation();
+        int findFlags = FindInventoryLocationType.ATTACHMENT;
+        if (!inv.FindFirstFreeLocationForNewEntity(classname, findFlags, loc))
+            return null;
+
+        int eceFlags = LFV_ECE.IN_INVENTORY;
+        EntityAI ent = GameInventory.LocationCreateEntity(loc, classname, eceFlags, LFV_RF.DEFAULT);
+        return ItemBase.Cast(ent);
+    }
+
+    // -----------------------------------------------------------
     // Apply properties to a spawned item from its record
     // -----------------------------------------------------------
     static void ApplyProperties(ItemBase item, LFV_ItemRecord record)

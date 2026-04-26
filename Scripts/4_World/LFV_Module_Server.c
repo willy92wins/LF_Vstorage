@@ -22,7 +22,14 @@ modded class LFV_Module
     {
         super.OnMissionStart(sender, args);
 
-        MakeDirectory(LFV_Paths.STORAGE_DIR);
+        // Config dir ($profile:) — always available, create now so Load/Save work.
+        // Data dir ($storage:) is created later in OnMissionLoaded: the engine
+        // populates storage_N/ during/after the first mission load, so calling
+        // MakeDirectory("$storage:LFVStorage") here would silently no-op and
+        // every subsequent FileSerializer.Open would fail with "Cannot open for
+        // write". LFV_FileStorage.EnsureStorageDir() also re-tries the create
+        // lazily on every write path as a defensive belt-and-suspenders.
+        MakeDirectory(LFV_Paths.SETTINGS_DIR);
         m_Settings.Load();
         LFV_Log.SetLevel(m_Settings.m_LogLevel);
         LFV_Registry.Init(m_Settings);
@@ -57,7 +64,7 @@ modded class LFV_Module
 
         // ProximityMonitor removed Phase 1: virtualization is event-driven
         // via action hooks (Phase 2) and LFV_API (Phase 4).
-        StartIdMapSaveTimer();
+        StartSweepTimer();
         StartPeriodicScanTimer();
 
         string startMsg = "Module started -- v";
@@ -77,13 +84,29 @@ modded class LFV_Module
     override void OnMissionLoaded(Class sender, CF_EventArgs args)
     {
         super.OnMissionLoaded(sender, args);
-        GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(this.ScanAndReconcile, 10000, false);
-        GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(this.RunCleanup, 120000, false);
+
+        // $storage: alias is now resolved (engine populated storage_N/).
+        // Pre-create the data dir so the boot scan + first virtualize don't
+        // race on the lazy EnsureStorageDir path.
+        if (!LFV_FileStorage.EnsureStorageDir())
+        {
+            LFV_Log.Critical("OnMissionLoaded: storage dir could not be created -- writes will fail until $storage: resolves. Check server profile permissions and storage_N directory.");
+        }
+
+        int scanDelay = m_Settings.m_ScanInitialDelayMs;
+        int cleanupDelay = m_Settings.m_CleanupInitialDelayMs;
+
+        GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(this.ScanAndReconcile, scanDelay, false);
+        GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).CallLater(this.RunCleanup, cleanupDelay, false);
 
         // Phase 1.1: open the gate. Hooks early-returned before this.
         SetStartupComplete(true);
 
-        string loadedMsg = "OnMissionLoaded -- scan in 10s, cleanup in 120s, startup gate OPEN";
+        string loadedMsg = "OnMissionLoaded -- scan in ";
+        loadedMsg = loadedMsg + scanDelay.ToString();
+        loadedMsg = loadedMsg + "ms, cleanup in ";
+        loadedMsg = loadedMsg + cleanupDelay.ToString();
+        loadedMsg = loadedMsg + "ms, startup gate OPEN";
         LFV_Log.Info(loadedMsg);
     }
 
@@ -101,7 +124,7 @@ modded class LFV_Module
         GetGame().GetCallQueue(CALL_CATEGORY_SYSTEM).Remove(this.RunCleanup);
 
         StopAutoCloseTimer();
-        StopIdMapSaveTimer();
+        StopSweepTimer();
         StopPeriodicScanTimer();
         StopQueueProcessor();
 
@@ -164,12 +187,15 @@ modded class LFV_Module
             int elapsed = GetGame().GetTime() - startTime;
             if (elapsed > budgetMs)
             {
+                int pending = shutdownContainers.Count() - i;
                 string timeoutMsg = "OnMissionFinish timeout after ";
                 timeoutMsg = timeoutMsg + elapsed.ToString();
                 timeoutMsg = timeoutMsg + "ms -- ";
                 timeoutMsg = timeoutMsg + virtualized.ToString();
-                timeoutMsg = timeoutMsg + " containers saved";
-                LFV_Log.Warn(timeoutMsg);
+                timeoutMsg = timeoutMsg + " saved, ";
+                timeoutMsg = timeoutMsg + pending.ToString();
+                timeoutMsg = timeoutMsg + " pending (data preserved in-memory, will retry next boot)";
+                LFV_Log.Critical(timeoutMsg);
                 break;
             }
 
@@ -208,10 +234,9 @@ modded class LFV_Module
             LFV_Log.Info(savedMsg);
         }
 
-        if (m_PersistentIdToStorageId.Count() > 0)
-        {
-            LFV_IdMap.Save(m_PersistentIdToStorageId, m_ContainerStates);
-        }
+        // IdMap save removed in PERSIST v2 -- StorageId persists via engine
+        // OnStoreSave on each modded container. IdMap kept read-only for
+        // legacy save migration; writes are no longer needed.
 
         LFV_Stats.LogSummary();
         super.OnMissionFinish(sender, args);
@@ -321,15 +346,16 @@ modded class LFV_Module
         // For LFV barrels: look by storageId stored in OnStoreLoad
         // (handled when barrels report their storageId after loading)
 
-        // Layer 2: IdMap reverse lookup -- find entity by PersistentID
-        // The IdMap maps PersistentID -> StorageId. We need to find
-        // which PersistentID maps to our storageId, then look up entity.
+        // Layer 2: IdMap reverse lookup (MIGRATION: remove in next release).
+        // Kept read-only to resolve entities for legacy PERSIST v1 saves
+        // whose StorageId is not yet on the entity. Once all servers have
+        // cycled through one engine save under PERSIST v2, this branch
+        // is dead code.
         for (int j = 0; j < m_PersistentIdToStorageId.Count(); j++)
         {
             string mappedSid = m_PersistentIdToStorageId.GetElement(j);
             if (mappedSid == storageId)
             {
-                // Found the PersistentID key -- parse it back to 4 ints
                 string pidKey = m_PersistentIdToStorageId.GetKey(j);
                 ItemBase idMapEntity = LookupEntityByPidKey(pidKey);
                 if (idMapEntity)
@@ -382,6 +408,12 @@ modded class LFV_Module
 
         m_ContainerStates.Set(container, state);
         LFV_Stats.s_TotalContainers = LFV_Stats.s_TotalContainers + 1;
+
+        // Mirror StorageId onto the entity so OnStoreSave (PERSIST v2)
+        // captures it on the next engine persistence flush. Idempotent:
+        // barrels/vanilla containers that already had it set re-receive
+        // the same value.
+        container.LFV_SetStorageId(storageId);
     }
 
     // -----------------------------------------------------------
@@ -498,21 +530,13 @@ modded class LFV_Module
         if (!container) return;
         if (!m_ContainerStates.Contains(container)) return;
 
-        LFV_ContainerState state = m_ContainerStates.Get(container);
-
         // Cancel any active/pending queue for this container
         CancelQueueForContainer(container);
 
-        // Remove from IdMap if present
-        if (state && state.m_StorageId != "")
-        {
-            string pidKey = LFV_IdMap.GetKeyFromEntity(container);
-            if (pidKey != "")
-            {
-                LFV_IdMap.Remove(m_PersistentIdToStorageId, pidKey);
-                m_IdMapDirtyCount++;
-            }
-        }
+        // IdMap remove removed in PERSIST v2 -- stale legacy entries are
+        // harmless (read-only fallback, only consulted when m_LFV_StorageId
+        // is empty on a modded container). Engine persistence is the
+        // source of truth going forward.
 
         m_ContainerStates.Remove(container);
 
@@ -520,6 +544,42 @@ modded class LFV_Module
         LFV_Stats.s_TotalContainers = LFV_Stats.s_TotalContainers - 1;
         if (LFV_Stats.s_TotalContainers < 0)
             LFV_Stats.s_TotalContainers = 0;
+    }
+
+    // -----------------------------------------------------------
+    // Finish a deferred untrack when the entity died mid-queue.
+    //
+    // VirtualizeQueue.OnComplete/OnCancel calls this if m_Container
+    // became null while the queue ran. In that case EEDelete fired,
+    // OnEntityDestroyed saw m_IsVirtualizing=true and deferred the
+    // purge — so the state entry is still in m_ContainerStates with
+    // a dangling key. We find it by storageId and remove it here.
+    //
+    // m_QueuedContainers may still hold the zombie pointer; that set
+    // is bounded by concurrent operations and doesn't affect any hot
+    // path (HasQueueForContainer is only queried with live entities).
+    // -----------------------------------------------------------
+    override void UntrackContainerBySid(string sid)
+    {
+        if (sid == "") return;
+
+        for (int i = m_ContainerStates.Count() - 1; i >= 0; i--)
+        {
+            LFV_ContainerState state = m_ContainerStates.GetElement(i);
+            if (!state) continue;
+            if (state.m_StorageId != sid) continue;
+
+            m_ContainerStates.RemoveElement(i);
+
+            LFV_Stats.s_TotalContainers = LFV_Stats.s_TotalContainers - 1;
+            if (LFV_Stats.s_TotalContainers < 0)
+                LFV_Stats.s_TotalContainers = 0;
+
+            string msg = "UntrackContainerBySid: purged zombie state for ";
+            msg = msg + sid;
+            LFV_Log.Info(msg);
+            return;
+        }
     }
 
     // -----------------------------------------------------------
@@ -916,10 +976,21 @@ modded class LFV_Module
             state.m_Manifest = data.m_Manifest;
         }
 
-        // Backup rotation
+        // Backup rotation -- abort save if rotation fails so the existing
+        // .lfv is preserved. Continuing would let AtomicSave clobber the
+        // only valid copy with a post-rotation write that may itself fail.
         if (doBackupRotation && m_Settings.m_BackupRotations > 0)
         {
-            LFV_FileStorage.RotateBackups(state.m_StorageId);
+            if (!LFV_FileStorage.RotateBackups(state.m_StorageId))
+            {
+                string rotErr = "PrepareVirtualization: backup rotation failed, aborting save for ";
+                rotErr = rotErr + state.m_StorageId;
+                LFV_Log.Critical(rotErr);
+                LFV_StateMachine.Transition(state, LFV_State.IDLE);
+                if (procBarrel)
+                    procBarrel.LFV_SetIsProcessing(false);
+                return null;
+            }
         }
 
         // Write to disk (atomic)
@@ -942,17 +1013,14 @@ modded class LFV_Module
             SaveAdminJson(data);
         }
 
-        // Update SyncVars for LFV barrels / IdMap for vanilla
+        // LFV barrels get SyncVars for client; vanilla containers persist
+        // StorageId via OnStoreSave on modded ItemBase/TentBase (PERSIST v2).
         LFV_Barrel_Base lfvBarrel = LFV_Barrel_Base.Cast(container);
         if (lfvBarrel)
         {
             lfvBarrel.LFV_SetItemCount(data.m_TotalItemCount);
             lfvBarrel.LFV_SetHasItems(true);
             lfvBarrel.LFV_SetManifest(data.m_Manifest);
-        }
-        else
-        {
-            RegisterInIdMap(container, state.m_StorageId);
         }
 
         // Send pre-formatted manifest to nearby clients via RPC
@@ -1013,27 +1081,21 @@ modded class LFV_Module
         data.m_OwnerUID = "";
         data.m_PersistentId = LFV_IdMap.GetKeyFromEntity(container);
 
-        // Build item tree from container inventory
+        // Build item tree from container inventory.
+        //
+        // Top-level attachments of the container (codelock, CombinationLock,
+        // camonet, etc.) are intentionally NOT virtualized: they are
+        // fixtures of the container, not storage contents. Capturing and
+        // re-spawning them would (a) lose third-party mod state tracking
+        // keyed to the original entity's NetworkID (e.g. CodeLock mod
+        // passwords), and (b) trip the SpawnAsAttachment / fallback chain
+        // on restore with no recovery path. Cargo items (and their nested
+        // attachments, like a magazine on a weapon) ARE captured via the
+        // Cargo loop below -- FromItem recurses into each cargo item's
+        // attachments with the correct per-entity slot ID.
         GameInventory inv = container.GetInventory();
         if (inv)
         {
-            // Attachments
-            int attCount = inv.AttachmentCount();
-            for (int a = 0; a < attCount; a++)
-            {
-                EntityAI attEnt = inv.GetAttachmentFromIndex(a);
-                if (!attEnt) continue;
-                ItemBase attItem = ItemBase.Cast(attEnt);
-                if (attItem)
-                {
-                    int attSlot = inv.GetAttachmentSlotId(a);
-                    LFV_ItemRecord attRec = LFV_ItemRecord.FromItem(attItem, LFV_InvType.ATTACHMENT, 0, 0, 0, attSlot, false, 0);
-                    if (attRec)
-                        data.m_Items.Insert(attRec);
-                }
-            }
-
-            // Cargo
             CargoBase cargo = inv.GetCargo();
             if (cargo)
             {
@@ -1302,15 +1364,9 @@ modded class LFV_Module
         GameInventory inv = container.GetInventory();
         if (!inv) return;
 
-        // Attachments (backward)
-        for (int i = inv.AttachmentCount() - 1; i >= 0; i--)
-        {
-            EntityAI att = inv.GetAttachmentFromIndex(i);
-            if (att)
-                GetGame().ObjectDelete(att);
-        }
-
-        // Cargo (backward)
+        // Only cargo is deleted. Top-level attachments (codelock, lock,
+        // camonet) are fixtures and stay put; BuildContainerFile skips
+        // them so there are no records in .lfv for these anyway.
         CargoBase cargo = inv.GetCargo();
         if (cargo)
         {
@@ -1338,6 +1394,8 @@ modded class LFV_Module
     // -----------------------------------------------------------
     override void SaveAdminJson(LFV_ContainerFile data)
     {
+        if (!LFV_FileStorage.EnsureStorageDir()) return;
+
         string jsonPath = LFV_Paths.GetContainerJsonPath(data.m_StorageId);
 
         // JSON-FIX v2: convert to JSON-safe class (no native engine types)
@@ -1437,6 +1495,34 @@ modded class LFV_Module
         }
 
         TrackContainer(barrel, sid, initialState);
+    }
+
+    // -----------------------------------------------------------
+    // Register a vanilla container that loaded from persistence
+    // Called from modded ItemBase/TentBase EEInit after OnStoreLoad.
+    // storageId may come from engine persistence (PERSIST >= 2) or
+    // from IdMap fallback during migration (PERSIST_LEGACY saves).
+    // Empty storageId = first-time virtualize never happened; will
+    // generate a fresh one.
+    // -----------------------------------------------------------
+    void RegisterContainerFromPersistence(ItemBase container, string storageId)
+    {
+        if (!container) return;
+
+        if (storageId == "")
+        {
+            storageId = GenerateStorageId(container);
+            container.LFV_SetStorageId(storageId);
+        }
+
+        int initialState = LFV_State.IDLE;
+        string lfvPath = LFV_Paths.GetContainerPath(storageId);
+        if (FileExist(lfvPath))
+        {
+            initialState = LFV_State.VIRTUALIZED;
+        }
+
+        TrackContainer(container, storageId, initialState);
     }
 
     // =========================================================
@@ -1612,75 +1698,41 @@ modded class LFV_Module
     }
 
     // =========================================================
-    // IDMAP + CLEANUP -- Sprint 3 Phase C
+    // SWEEP + CLEANUP
     // =========================================================
+    // IdMap writes removed in PERSIST v2 -- StorageId now persisted
+    // via OnStoreSave on modded ItemBase/TentBase. IdMap remains
+    // READ-ONLY for one release as migration fallback (LFV_IdMap.Load
+    // at mission start, Lookup in EEInit for legacy PERSIST v1 saves).
 
     // -----------------------------------------------------------
-    // Register a vanilla container in the IdMap
-    // Called after virtualizing a non-LFV_Barrel container
+    // Start/Stop periodic sweep timer (300s interval).
+    // Runs SweepStaleContainers to remove tracking entries for
+    // destroyed or out-of-world containers. Former IdMap save
+    // cadence; IdMap saves no longer happen (engine persistence
+    // owns the StorageId in PERSIST v2).
     // -----------------------------------------------------------
-    override void RegisterInIdMap(ItemBase container, string storageId)
+    void StartSweepTimer()
     {
-        if (!container) return;
-        if (storageId == "") return;
+        if (m_SweepTimer) return;
+        m_SweepTimer = new Timer(CALL_CATEGORY_GAMEPLAY);
+        m_SweepTimer.Run(300.0, this, "OnSweepTimerTick", null, true);
+        string sweepTimerMsg = "Sweep timer started (300s interval)";
+        LFV_Log.Info(sweepTimerMsg);
+    }
 
-        string pidKey = LFV_IdMap.GetKeyFromEntity(container);
-        if (pidKey == "")
+    void StopSweepTimer()
+    {
+        if (m_SweepTimer)
         {
-            string pidWarnMsg = "IdMap: no PersistentID for ";
-            pidWarnMsg = pidWarnMsg + container.GetType();
-            LFV_Log.Warn(pidWarnMsg);
-            return;
-        }
-
-        LFV_IdMap.Register(m_PersistentIdToStorageId, pidKey, storageId);
-        m_IdMapDirtyCount++;
-    }
-
-    // -----------------------------------------------------------
-    // Save IdMap to disk (call periodically, not every register)
-    // -----------------------------------------------------------
-    void SaveIdMap()
-    {
-        LFV_IdMap.Save(m_PersistentIdToStorageId, m_ContainerStates);
-        m_IdMapDirtyCount = 0;
-    }
-
-    // -----------------------------------------------------------
-    // Start/Stop IdMap periodic save timer (Sprint 4, #9)
-    // Saves every 300s to protect against server crash
-    // -----------------------------------------------------------
-    void StartIdMapSaveTimer()
-    {
-        if (m_IdMapSaveTimer) return;
-        m_IdMapSaveTimer = new Timer(CALL_CATEGORY_GAMEPLAY);
-        m_IdMapSaveTimer.Run(300.0, this, "OnIdMapSaveTimerTick", null, true);
-        string idmTimerMsg = "IdMap periodic save timer started (300s interval)";
-        LFV_Log.Info(idmTimerMsg);
-    }
-
-    void StopIdMapSaveTimer()
-    {
-        if (m_IdMapSaveTimer)
-        {
-            m_IdMapSaveTimer.Stop();
-            m_IdMapSaveTimer = null;
+            m_SweepTimer.Stop();
+            m_SweepTimer = null;
         }
     }
 
-    // Called every 300s -- saves if dirty, always sweeps stale refs
-    void OnIdMapSaveTimerTick()
+    void OnSweepTimerTick()
     {
-        // sweep stale references even if AutoClose is disabled.
-        // This timer always runs (300s interval), providing a safety net.
         SweepStaleContainers();
-
-        if (m_IdMapDirtyCount > 0 && m_PersistentIdToStorageId.Count() > 0)
-        {
-            SaveIdMap();
-            string idmSaveMsg = "IdMap periodic save triggered";
-            LFV_Log.Info(idmSaveMsg);
-        }
     }
 
     // -----------------------------------------------------------
@@ -1713,9 +1765,15 @@ modded class LFV_Module
     void OnPeriodicScanTick()
     {
         if (m_IsShuttingDown) return;
-        string scanTickMsg = "Periodic ScanAndReconcile triggered";
-        LFV_Log.Info(scanTickMsg);
-        ScanAndReconcile();
+
+        // ScanAndReconcile is NOT re-run periodically anymore: the boot
+        // scan (OnMissionLoaded + 10s) reconciles every .lfv on disk, and
+        // after that the only "new" .lfv files come from our own
+        // VirtualizeQueue (which already updates state in-memory). A
+        // periodic re-scan would re-read every .lfv from disk for no
+        // additional information and produce a predictable lag spike
+        // every m_PeriodicScanInterval seconds. Admin can force a rescan
+        // via admin command if .lfv files are introduced externally.
 
         // Safety net: re-virtualize IDLE containers with items that
         // have been idle for >5 minutes. Catches containers that
@@ -1915,14 +1973,9 @@ modded class LFV_Module
             AdminCmdCleanupForce();
             response = "Cleanup forced (dry-run OFF). Check server logs.";
         }
-        else if (command == "save idmap")
-        {
-            SaveIdMap();
-            response = "IdMap saved to disk.";
-        }
         else
         {
-            response = "Unknown command. Available: status, stats, cleanup force, save idmap";
+            response = "Unknown command. Available: status, stats, cleanup force";
         }
 
         // Send response back to client

@@ -184,6 +184,56 @@ class LFV_Registry
         return true;
     }
 
+    // -----------------------------------------------------------
+    // Strict-whitelist query, independent of s_StrictMode.
+    //
+    // Use this in code paths that run for EVERY ItemBase-derived
+    // entity (persistence hooks at modded class ItemBase level,
+    // EEInit registration). The default-true branch of
+    // IsVirtualContainer was designed for action hooks where the
+    // caller already established "this is a container" intent; it
+    // must NOT leak into persistence / registration paths, where
+    // returning true for codelocks, weapons, magazines, BBP
+    // structures, etc. (which is every non-blacklisted classname)
+    // causes:
+    //   - m_ContainerStates flooded with non-container entities
+    //   - LFV persistence bytes injected between vanilla ItemBase
+    //     bytes and child-class bytes (CombinationLock.m_Combination,
+    //     Magazine state, BBP.m_IsHologram, etc.), causing read
+    //     misalignment and data loss.
+    //
+    // This function mirrors strict mode: only explicit whitelist
+    // entries (settings.json m_VirtualContainers, or config property
+    // lfvVirtualStorage=1) return true. Blacklist still wins.
+    // -----------------------------------------------------------
+    static bool IsExplicitVirtualContainer(string classname)
+    {
+        if (!s_VirtualContainers)
+            return false;
+
+        // Blacklist primary -- always wins
+        if (s_NeverVirtualize && s_NeverVirtualize.Find(classname) > -1)
+            return false;
+
+        // Negative cache (populated by prior failed lookups)
+        if (s_NonContainers && s_NonContainers.Find(classname) > -1)
+            return false;
+
+        // Explicit whitelist match
+        if (s_VirtualContainers.Find(classname) > -1)
+            return true;
+
+        // Config property fallback (lfvVirtualStorage=1 in CfgVehicles)
+        TryRegisterFromConfig(classname);
+        if (s_VirtualContainers.Find(classname) > -1)
+            return true;
+
+        // Cache miss so we don't re-query the config every call
+        if (s_NonContainers)
+            s_NonContainers.Insert(classname);
+        return false;
+    }
+
     static bool IsNeverVirtualize(string classname)
     {
         if (!s_NeverVirtualize)

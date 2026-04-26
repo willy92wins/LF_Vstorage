@@ -246,18 +246,12 @@ class LFV_StateMachine
 
         int cleared = 0;
 
-        // Attachments (iterate backward for safe removal)
-        for (int i = inv.AttachmentCount() - 1; i >= 0; i--)
-        {
-            EntityAI att = inv.GetAttachmentFromIndex(i);
-            if (att)
-            {
-                GetGame().ObjectDelete(att);
-                cleared++;
-            }
-        }
-
-        // Cargo
+        // Only cargo gets cleared. Top-level attachments are fixtures
+        // (codelock, lock, camonet) -- LFV never serialized them after
+        // the attachment-virtualization fix, so they cannot be phantoms
+        // of a mid-restore crash. Deleting them here would silently strip
+        // codelocks/camonets from every container whose state transitions
+        // through reconciliation, which was the codelock-removal bug.
         CargoBase cargo = inv.GetCargo();
         if (cargo)
         {
@@ -342,7 +336,12 @@ class LFV_StateMachine
     }
 
     // -----------------------------------------------------------
-    // Check if container has any cargo or attachments
+    // Check if container has any virtualizable contents.
+    //
+    // Only cargo counts: top-level attachments (codelock, lock, camonet)
+    // are fixtures, never virtualized, and their presence alone should
+    // not trigger a virtualize pass or confuse reconciliation into
+    // thinking cargo survived a crash.
     // -----------------------------------------------------------
     static bool HasCargoOrAttachments(ItemBase container)
     {
@@ -350,9 +349,6 @@ class LFV_StateMachine
 
         GameInventory inv = container.GetInventory();
         if (!inv) return false;
-
-        if (inv.AttachmentCount() > 0)
-            return true;
 
         CargoBase cargo = inv.GetCargo();
         if (cargo && cargo.GetItemCount() > 0)
